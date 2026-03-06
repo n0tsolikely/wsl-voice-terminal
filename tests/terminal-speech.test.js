@@ -115,6 +115,21 @@ test('extractSpeechText ignores pending-steer and Codex footer lines', () => {
   assert.equal(output, 'I fixed the clipboard bridge and the reply playback trigger.')
 })
 
+test('extractSpeechText recovers reply text when a Codex footer redraw is glued to the next sentence', () => {
+  const input = [
+    'gpt-5.4 xhigh · 100% left · /mnt/c/Users/peterHere is the real assistant reply.',
+    'It should still be spoken cleanly.',
+    '› Write tests for @filename'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Here is the real assistant reply. It should still be spoken cleanly.'
+  )
+})
+
 test('extractSpeechText keeps Claude reply text but drops Claude tool chatter and shortcuts chrome', () => {
   const input = [
     '● Read 1 file (ctrl+o to expand)',

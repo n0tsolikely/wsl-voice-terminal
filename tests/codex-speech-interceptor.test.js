@@ -87,6 +87,44 @@ test('finalizes when Codex returns to a prompt with no space and a footer line',
   assert.deepEqual(emitted, ['Here is the final answer.'])
 })
 
+test('does not finalize Codex prompt placeholder text as a reply before the real answer arrives', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Write tests for @filename\n')
+  interceptor.observeInput('hey\r')
+  interceptor.observeOutput(
+    [
+      '› hey',
+      '',
+      'Write tests for @filename',
+      '',
+      '• Working (0s • esc to interrupt)',
+      '',
+      '› Write tests for @filename',
+      'gpt-5.4 xhigh · 100% left · /mnt/c/Users/peter'
+    ].join('\n')
+  )
+
+  assert.equal(interceptor.flush(), null)
+  assert.deepEqual(emitted, [])
+
+  interceptor.observeOutput(
+    [
+      'Here is the real assistant reply.',
+      'It should be spoken instead of the prompt hint.',
+      '› Write tests for @filename'
+    ].join('\n')
+  )
+
+  assert.equal(
+    interceptor.flush(),
+    'Here is the real assistant reply. It should be spoken instead of the prompt hint.'
+  )
+  assert.deepEqual(emitted, [
+    'Here is the real assistant reply. It should be spoken instead of the prompt hint.'
+  ])
+})
+
 test('does not emit duplicates when flushed repeatedly after completion', () => {
   const { interceptor, emitted } = createInterceptor()
 
