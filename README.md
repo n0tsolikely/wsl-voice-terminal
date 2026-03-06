@@ -92,6 +92,7 @@ Future distribution should prefer a signed installer or a signed PowerShell scri
 ### `node-pty` or native rebuild failures
 
 - Install Visual Studio Build Tools or Visual Studio and include the "Desktop development with C++" workload.
+- The installer now detects missing build tools and offers to install them automatically.
 - Rerun `npm install`.
 - If `npm install` still fails, run `npm run rebuild:native`.
 - Run `npm run doctor` to recheck the local setup.

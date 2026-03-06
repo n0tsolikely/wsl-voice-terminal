@@ -195,11 +195,99 @@ function Test-VsCppBuildTools {
     }
   }
 
+  if ($result.Detected) {
+    return $result
+  }
+
+  $registryRoots = @(
+    'HKLM:\SOFTWARE\Microsoft\VisualStudio\Setup\Instances',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\Setup\Instances'
+  )
+
+  foreach ($root in $registryRoots) {
+    if (-not (Test-Path $root)) {
+      continue
+    }
+
+    $instances = Get-ChildItem -Path $root -ErrorAction SilentlyContinue
+    foreach ($instance in $instances) {
+      try {
+        $props = Get-ItemProperty -Path $instance.PSPath -ErrorAction SilentlyContinue
+        if ($props.InstallationPath) {
+          $result.Detected = $true
+          $result.Source = 'registry'
+          $result.Detail = $props.InstallationPath
+          return $result
+        }
+      } catch {
+        # Ignore registry read failures.
+      }
+    }
+  }
+
   return $result
 }
 
 function Get-VsCppGuidance {
   return 'Install Visual Studio Build Tools or Visual Studio and include the "Desktop development with C++" workload, then rerun npm install (and npm run rebuild:native if needed).'
+}
+
+function Ensure-VsBuildTools([string]$WingetPath) {
+  Write-Step 'Checking Visual Studio C++ build tools'
+  $vsCpp = Test-VsCppBuildTools
+  if ($vsCpp.Detected) {
+    Write-Pass ("Visual Studio C++ build tools detected ({0})" -f $vsCpp.Detail)
+    return @{
+      Result = $vsCpp
+      Installed = $false
+    }
+  }
+
+  Write-Warn 'Visual Studio C++ build tools not detected.'
+  Write-Warn 'node-pty requires native compilation on some systems.'
+  Write-Warn (Get-VsCppGuidance)
+
+  if (-not $WingetPath) {
+    return @{
+      Result = $vsCpp
+      Installed = $false
+    }
+  }
+
+  $response = Read-Host 'Install Visual Studio Build Tools now? (y/N)'
+  if ($response -notmatch '^(y|yes)$') {
+    Write-Warn 'Skipping Visual Studio Build Tools install.'
+    return @{
+      Result = $vsCpp
+      Installed = $false
+    }
+  }
+
+  Write-Install 'Installing Visual Studio Build Tools with winget'
+  Invoke-Checked -FilePath $WingetPath -Arguments @(
+    'install',
+    '--id',
+    'Microsoft.VisualStudio.2022.BuildTools',
+    '--exact',
+    '--source',
+    'winget',
+    '--accept-package-agreements',
+    '--accept-source-agreements'
+  )
+  Write-Warn 'During the installer UI, select the "Desktop development with C++" workload.'
+  Refresh-Path
+
+  $vsCpp = Test-VsCppBuildTools
+  if ($vsCpp.Detected) {
+    Write-Pass ("Visual Studio C++ build tools detected ({0})" -f $vsCpp.Detail)
+  } else {
+    Write-Warn 'Visual Studio C++ build tools are still not detected.'
+  }
+
+  return @{
+    Result = $vsCpp
+    Installed = $true
+  }
 }
 
 function Test-Git {
@@ -464,18 +552,12 @@ function Ensure-LocalWhisperRuntime([string]$RepoDir) {
   }
 }
 
-function Run-NpmInstall([string]$RepoDir) {
+function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
   if (-not (Test-Npm)) {
     Stop-Install 'npm is not available on PATH. Restart PowerShell after Node.js installs, then rerun install.ps1.'
   }
 
-  Write-Step 'Checking Visual Studio C++ build tools'
-  $vsCpp = Test-VsCppBuildTools
-  if ($vsCpp.Detected) {
-    Write-Pass ("Visual Studio C++ build tools detected ({0})" -f $vsCpp.Detail)
-  } else {
-    Write-Warn ("Visual Studio C++ build tools not detected. {0}" -f (Get-VsCppGuidance))
-  }
+  $vsInstall = Ensure-VsBuildTools -WingetPath $WingetPath
 
   $nodePtyRequired = Test-NodePtyDependency -RepoDir $RepoDir
 
@@ -488,6 +570,17 @@ function Run-NpmInstall([string]$RepoDir) {
     $npmSucceeded = $true
   } catch {
     Write-Warn ("npm install failed: {0}" -f $_.Exception.Message)
+  }
+
+  if (-not $npmSucceeded -and $vsInstall.Installed) {
+    Write-Install 'Retrying npm install after Visual Studio Build Tools install'
+    try {
+      Invoke-Checked -FilePath 'npm' -Arguments @('install') -WorkingDirectory $RepoDir
+      Write-Pass 'npm install completed'
+      $npmSucceeded = $true
+    } catch {
+      Write-Warn ("npm install retry failed: {0}" -f $_.Exception.Message)
+    }
   }
 
   $needsRebuild = $false
@@ -690,7 +783,7 @@ $repoDir = Resolve-RepoDir -WingetPath $wingetPath
 Ensure-EnvFile -RepoDir $repoDir
 
 if (-not $LocalWhisperOnly) {
-  Run-NpmInstall -RepoDir $repoDir
+  Run-NpmInstall -RepoDir $repoDir -WingetPath $wingetPath
 }
 
 Ensure-LocalWhisperRuntime -RepoDir $repoDir
