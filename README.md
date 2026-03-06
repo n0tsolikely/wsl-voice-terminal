@@ -20,14 +20,14 @@ Run this in Windows PowerShell:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/n0tsolikely/wsl-voice-terminal/main/install.ps1 | iex"
 ```
 
-Safer two-step install:
+## Safer Two-Step Install
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/n0tsolikely/wsl-voice-terminal/main/install.ps1 -OutFile .\install.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-What the installer does:
+## What the Installer Does
 
 - checks for `winget`
 - installs `Git`, `Node.js LTS`, and `Python 3.11` if they are missing
@@ -37,31 +37,33 @@ What the installer does:
 - creates `.env` from `.env.example` if needed
 - creates `.local-whisper-venv` and installs `requirements.local-whisper.txt` if present
 - launches the app when setup finishes
-- future launches can prompt inside the app when a newer GitHub version is available
-
-## Speech
-
-- If `OPENAI_API_KEY` is valid, transcription uses OpenAI and reply TTS prefers OpenAI.
-- If `OPENAI_API_KEY` is missing, still set to `your_key_here`, or rejected by OpenAI, transcription falls back to local `faster-whisper` automatically.
-- When OpenAI transcription is unavailable, the app shows one normal status message that it is running local-only for that session instead of spamming red auth errors.
-- On startup, the app checks the local `faster-whisper` runtime and reinstalls `requirements.local-whisper.txt` when the venv is missing or the requirements changed.
-- Reply TTS can also fall back to local Windows speech when `TTS_PROVIDER=auto` and OpenAI TTS is unavailable, or when `TTS_PROVIDER=local`.
-- Local fallback defaults to `base.en` on `cpu` with `int8` compute for Windows reliability. You can override that in `.env`.
-- Local Whisper installs into `.local-whisper-venv` and downloads model/cache files locally. Those files are ignored by git and are not shipped in the repo.
-- Local TTS uses Windows PowerShell and `System.Speech`, so it is Windows-only.
 
 ## Manual Install
 
 1. `npm install`
 2. Copy `.env.example` to `.env` if you want to set an OpenAI key, choose a TTS provider, or tweak local whisper settings
 3. Optional: `npm run install:local-whisper` if you want to prewarm local Whisper before the first launch
-4. Double-click `launch-wsl-voice-terminal.bat`
+4. Run `launch-wsl-voice-terminal.bat`
+
+## Project Layout
+
+- `install.ps1`: bootstrapper and setup
+- `scripts/doctor.js`: diagnostics (`npm run doctor`)
+- `launch-wsl-voice-terminal.bat`: app launcher
+
+## Speech
+
+- If `OPENAI_API_KEY` is valid, transcription uses OpenAI and reply TTS prefers OpenAI.
+- If `OPENAI_API_KEY` is missing, still set to `your_key_here`, or rejected by OpenAI, transcription falls back to local `faster-whisper`.
+- The installer can set up the local `faster-whisper` venv; rerun `install.ps1` or `npm run install:local-whisper` if it goes missing.
+- Reply TTS can also fall back to local Windows speech when `TTS_PROVIDER=auto` and OpenAI TTS is unavailable, or when `TTS_PROVIDER=local`.
+- Local fallback defaults to `base.en` on `cpu` with `int8` compute for Windows reliability. You can override that in `.env`.
+- Local Whisper installs into `.local-whisper-venv` and downloads model/cache files locally. Those files are ignored by git and are not shipped in the repo.
+- Local TTS uses Windows PowerShell and `System.Speech`, so it is Windows-only.
 
 ## Updates
 
-- Standard installs from `install.ps1` can check GitHub on startup and prompt in-app when a newer version is available.
-- Choosing `Yes` runs the same installer/update path, then restarts the app.
-- Manual or mirrored copies can still update, but the app may migrate them into `%USERPROFILE%\\wsl-voice-terminal` so future updates stay simple.
+There is no auto-updater yet. To update, rerun `install.ps1` or `git pull` your repo. The installer will `git pull` the stable repo at `%USERPROFILE%\wsl-voice-terminal` when it is clean.
 
 ## Notes
 
@@ -78,6 +80,12 @@ What the installer does:
 - Rerun `npm install`.
 - If `npm install` still fails, run `npm run rebuild:native`.
 - Run `npm run doctor` to recheck the local setup.
+
+### Local Whisper issues
+
+- Ensure Python 3.11 is installed.
+- Run `npm run install:local-whisper` or rerun `install.ps1`.
+- Check `requirements.local-whisper.txt` and `.local-whisper-venv`.
 
 ### OpenAI key is wrong or missing
 

@@ -15,11 +15,15 @@ $StableRepoDir = Join-Path $env:USERPROFILE $RepoName
 $Script:WarningCount = 0
 
 function Write-Step($Message) {
-  Write-Host "[STEP] $Message" -ForegroundColor Cyan
+  Write-Host "[CHECK] $Message" -ForegroundColor Cyan
 }
 
 function Write-Pass($Message) {
-  Write-Host "[PASS] $Message" -ForegroundColor Green
+  Write-Host "[OK] $Message" -ForegroundColor Green
+}
+
+function Write-Install($Message) {
+  Write-Host "[INSTALL] $Message" -ForegroundColor Cyan
 }
 
 function Write-Warn($Message) {
@@ -67,7 +71,7 @@ function Invoke-Checked {
   }
 
   if (-not $IgnoreExitCode -and $exitCode -ne 0) {
-    throw "Command failed with exit code $exitCode: $FilePath $($Arguments -join ' ')"
+    throw ("Command failed with exit code {0}: {1} {2}" -f $exitCode, $FilePath, ($Arguments -join ' '))
   }
 
   return $exitCode
@@ -99,6 +103,34 @@ function Test-PackageScript([string]$RepoDir, [string]$ScriptName) {
   } catch {
     return $false
   }
+}
+
+function Test-NodePtyDependency([string]$RepoDir) {
+  try {
+    $packageJson = Get-PackageJson $RepoDir
+    return $null -ne $packageJson.dependencies.'node-pty' -or $null -ne $packageJson.optionalDependencies.'node-pty'
+  } catch {
+    return $false
+  }
+}
+
+function Test-NodePtyBuild([string]$RepoDir) {
+  $ptyBinary = Join-Path $RepoDir 'node_modules\node-pty\build\Release\pty.node'
+  return Test-Path $ptyBinary
+}
+
+function Get-ElectronRebuildPath([string]$RepoDir) {
+  $cmdPath = Join-Path $RepoDir 'node_modules\.bin\electron-rebuild.cmd'
+  if (Test-Path $cmdPath) {
+    return $cmdPath
+  }
+
+  $binPath = Join-Path $RepoDir 'node_modules/.bin/electron-rebuild'
+  if (Test-Path $binPath) {
+    return $binPath
+  }
+
+  return $null
 }
 
 function Test-Git {
@@ -180,7 +212,7 @@ function Ensure-WingetPackage {
     return
   }
 
-  Write-Step "Installing $Name with winget"
+  Write-Install "Installing $Name with winget"
   Invoke-Checked -FilePath $WingetPath -Arguments @(
     'install',
     '--id',
@@ -238,7 +270,8 @@ function Resolve-RepoDir([string]$WingetPath) {
 
   $gitStatus = (& git -C $StableRepoDir status --porcelain)
   if ($gitStatus) {
-    Stop-Install "The repo at $StableRepoDir has local changes. Commit, stash, or remove them before rerunning install.ps1."
+    Write-Warn "The repo at $StableRepoDir has local changes. Skipping git pull to avoid overwriting your work."
+    return $StableRepoDir
   }
 
   Invoke-Checked -FilePath 'git' -Arguments @('-C', $StableRepoDir, 'fetch', 'origin')
@@ -308,6 +341,13 @@ function Get-PythonCommand {
 function Ensure-LocalWhisperRuntime([string]$RepoDir) {
   Write-Step 'Checking local faster-whisper runtime'
 
+  $requirementsPath = Join-Path $RepoDir 'requirements.local-whisper.txt'
+
+  if (-not (Test-Path $requirementsPath)) {
+    Write-Warn 'requirements.local-whisper.txt is missing. Skipping local faster-whisper package install.'
+    return
+  }
+
   $pythonCommand = Get-PythonCommand
   if (-not $pythonCommand) {
     Write-Warn 'Python 3.11 is not available. Skipping local faster-whisper setup.'
@@ -316,54 +356,110 @@ function Ensure-LocalWhisperRuntime([string]$RepoDir) {
 
   $venvDir = Join-Path $RepoDir '.local-whisper-venv'
   $venvPython = Join-Path $venvDir 'Scripts\python.exe'
-  $requirementsPath = Join-Path $RepoDir 'requirements.local-whisper.txt'
+  $hashPath = Join-Path $venvDir '.requirements.sha256'
+  $requirementsHash = (Get-FileHash -Algorithm SHA256 -Path $requirementsPath).Hash
 
   if (-not (Test-Path $venvPython)) {
-    Write-Step "Creating Python virtual environment at $venvDir"
-    Invoke-Checked -FilePath $pythonCommand.FilePath -Arguments ($pythonCommand.Arguments + @('-m', 'venv', $venvDir)) -WorkingDirectory $RepoDir
-    Write-Pass 'Created local faster-whisper virtual environment'
+    Write-Install "Creating Python virtual environment at $venvDir"
+    try {
+      Invoke-Checked -FilePath $pythonCommand.FilePath -Arguments ($pythonCommand.Arguments + @('-m', 'venv', $venvDir)) -WorkingDirectory $RepoDir
+      Write-Pass 'Created local faster-whisper virtual environment'
+    } catch {
+      Write-Warn ("Failed to create local faster-whisper venv: {0}" -f $_.Exception.Message)
+      return
+    }
   } else {
     Write-Pass 'Local faster-whisper virtual environment already exists'
   }
 
-  if (-not (Test-Path $requirementsPath)) {
-    Write-Warn 'requirements.local-whisper.txt is missing. Skipping local faster-whisper package install.'
+  $existingHash = if (Test-Path $hashPath) { (Get-Content $hashPath -Raw).Trim() } else { $null }
+  if ($existingHash -and $existingHash -eq $requirementsHash) {
+    Write-Pass 'Local faster-whisper requirements already installed'
     return
   }
 
-  Write-Step 'Installing local faster-whisper requirements'
-  Invoke-Checked -FilePath $venvPython -Arguments @(
-    '-m',
-    'pip',
-    'install',
-    '--disable-pip-version-check',
-    '-r',
-    $requirementsPath
-  ) -WorkingDirectory $RepoDir
-  Write-Pass 'Local faster-whisper requirements installed'
+  Write-Install 'Installing local faster-whisper requirements'
+  try {
+    Invoke-Checked -FilePath $venvPython -Arguments @(
+      '-m',
+      'pip',
+      'install',
+      '--disable-pip-version-check',
+      '-r',
+      $requirementsPath
+    ) -WorkingDirectory $RepoDir
+    Set-Content -Path $hashPath -Value $requirementsHash
+    Write-Pass 'Local faster-whisper requirements installed'
+  } catch {
+    Write-Warn ("Local faster-whisper install failed: {0}" -f $_.Exception.Message)
+  }
 }
 
 function Run-NpmInstall([string]$RepoDir) {
-  Write-Step 'Running npm install'
+  if (-not (Test-Npm)) {
+    Stop-Install 'npm is not available on PATH. Restart PowerShell after Node.js installs, then rerun install.ps1.'
+  }
+
+  Write-Install 'Running npm install'
+  $npmSucceeded = $false
 
   try {
     Invoke-Checked -FilePath 'npm' -Arguments @('install') -WorkingDirectory $RepoDir
     Write-Pass 'npm install completed'
+    $npmSucceeded = $true
+  } catch {
+    Write-Warn ("npm install failed: {0}" -f $_.Exception.Message)
+  }
+
+  $needsRebuild = $false
+  if (Test-NodePtyDependency -RepoDir $RepoDir) {
+    if (-not (Test-NodePtyBuild -RepoDir $RepoDir)) {
+      $needsRebuild = $true
+      Write-Warn 'node-pty native build not detected. Attempting rebuild.'
+    }
+  }
+
+  if (-not $npmSucceeded -and -not $needsRebuild) {
+    $needsRebuild = $true
+  }
+
+  if (-not $needsRebuild) {
     return
-  } catch {
-    Write-Warn "npm install failed: $($_.Exception.Message)"
   }
 
-  if (-not (Test-PackageScript -RepoDir $RepoDir -ScriptName 'rebuild:native')) {
-    Stop-Install 'npm install failed and no rebuild:native script exists. Install Visual Studio C++ build tools and rerun install.ps1.'
+  if (Test-PackageScript -RepoDir $RepoDir -ScriptName 'rebuild:native') {
+    Write-Install 'Attempting npm run rebuild:native'
+    try {
+      Invoke-Checked -FilePath 'npm' -Arguments @('run', 'rebuild:native') -WorkingDirectory $RepoDir
+      Write-Pass 'rebuild:native completed'
+      return
+    } catch {
+      if (-not $npmSucceeded) {
+        Stop-Install ("npm install failed and rebuild:native also failed: {0}" -f $_.Exception.Message)
+      }
+      Write-Warn ("rebuild:native failed: {0}" -f $_.Exception.Message)
+      return
+    }
   }
 
-  Write-Step 'Attempting npm run rebuild:native'
-  try {
-    Invoke-Checked -FilePath 'npm' -Arguments @('run', 'rebuild:native') -WorkingDirectory $RepoDir
-    Write-Pass 'rebuild:native completed'
-  } catch {
-    Stop-Install "npm install failed and rebuild:native also failed. Install the Visual Studio C++ build tools, then rerun install.ps1. $($_.Exception.Message)"
+  $rebuildPath = Get-ElectronRebuildPath -RepoDir $RepoDir
+  if ($rebuildPath) {
+    Write-Install 'Attempting electron-rebuild -f -w node-pty'
+    try {
+      Invoke-Checked -FilePath $rebuildPath -Arguments @('-f', '-w', 'node-pty') -WorkingDirectory $RepoDir
+      Write-Pass 'electron-rebuild completed'
+      return
+    } catch {
+      if (-not $npmSucceeded) {
+        Stop-Install ("npm install failed and electron-rebuild also failed: {0}" -f $_.Exception.Message)
+      }
+      Write-Warn ("electron-rebuild failed: {0}" -f $_.Exception.Message)
+      return
+    }
+  }
+
+  if (-not $npmSucceeded) {
+    Stop-Install 'npm install failed and no rebuild:native script is available. Install Visual Studio C++ build tools and rerun install.ps1.'
   }
 }
 
@@ -423,7 +519,8 @@ function Launch-App([string]$RepoDir, [bool]$WslReady) {
   }
 
   if (-not $WslReady) {
-    Stop-Install 'WSL Voice Terminal was installed, but launch was skipped because wsl.exe is missing. Run wsl --install in an elevated PowerShell window, reboot if required, then rerun install.ps1.'
+    Write-Warn 'WSL Voice Terminal was installed, but launch was skipped because wsl.exe is missing. Run wsl --install in an elevated PowerShell window, reboot if required, then rerun install.ps1.'
+    return
   }
 
   $launchBat = Join-Path $RepoDir 'launch-wsl-voice-terminal.bat'
@@ -456,27 +553,8 @@ if ($env:OS -ne 'Windows_NT') {
   Stop-Install 'install.ps1 only runs on Windows.'
 }
 
-$wingetPath = Ensure-Winget
-
 if ($DoctorOnly) {
   Write-Step 'Doctor mode enabled'
-  if (Test-Git) {
-    Write-Pass 'Git is installed'
-  } else {
-    Write-Warn 'Git is missing'
-  }
-
-  if (Test-Node) {
-    Write-Pass 'Node.js is installed'
-  } else {
-    Write-Warn 'Node.js is missing'
-  }
-
-  if (Test-Python311) {
-    Write-Pass 'Python 3.11 is installed'
-  } else {
-    Write-Warn 'Python 3.11 is missing'
-  }
 
   $doctorRepoDir = if (Test-WslVoiceTerminalRepo (Get-Location).Path) {
     (Get-Location).Path
@@ -484,15 +562,40 @@ if ($DoctorOnly) {
     $StableRepoDir
   }
 
-  $doctorWslReady = Check-Wsl
-  Run-Doctor -RepoDir $doctorRepoDir -WslReady $doctorWslReady
+  if ((Test-Path $doctorRepoDir) -and (Test-Node) -and (Test-Path (Join-Path $doctorRepoDir 'scripts\doctor.js'))) {
+    Write-Step 'Running scripts/doctor.js'
+    Invoke-Checked -FilePath 'node' -Arguments @((Join-Path $doctorRepoDir 'scripts\doctor.js')) -WorkingDirectory $doctorRepoDir -IgnoreExitCode
+  } else {
+    if (Test-Git) {
+      Write-Pass 'Git is installed'
+    } else {
+      Write-Warn 'Git is missing'
+    }
+
+    if (Test-Node) {
+      Write-Pass 'Node.js is installed'
+    } else {
+      Write-Warn 'Node.js is missing'
+    }
+
+    if (Test-Python311) {
+      Write-Pass 'Python 3.11 is installed'
+    } else {
+      Write-Warn 'Python 3.11 is missing'
+    }
+
+    $doctorWslReady = Check-Wsl
+    Run-Doctor -RepoDir $doctorRepoDir -WslReady $doctorWslReady
+  }
 
   if ($Script:WarningCount -gt 0) {
-    Write-Host "[WARN] Doctor finished with $Script:WarningCount warning(s)." -ForegroundColor Yellow
+    Write-Host ("[WARN] Doctor finished with {0} warning(s)." -f $Script:WarningCount) -ForegroundColor Yellow
   }
 
   exit 0
 }
+
+$wingetPath = Ensure-Winget
 
 Ensure-WingetPackage -Name 'Git' -WingetId 'Git.Git' -TestScript { Test-Git } -WingetPath $wingetPath
 Ensure-WingetPackage -Name 'Node.js LTS' -WingetId 'OpenJS.NodeJS.LTS' -TestScript { (Test-Node) -and (Test-Npm) } -WingetPath $wingetPath
@@ -511,7 +614,7 @@ Ensure-LocalWhisperRuntime -RepoDir $repoDir
 Launch-App -RepoDir $repoDir -WslReady $wslReady
 
 if ($Script:WarningCount -gt 0) {
-  Write-Host "[WARN] Installer finished with $Script:WarningCount warning(s)." -ForegroundColor Yellow
+  Write-Host ("[WARN] Installer finished with {0} warning(s)." -f $Script:WarningCount) -ForegroundColor Yellow
 } else {
   Write-Pass 'Installer finished without warnings'
 }
