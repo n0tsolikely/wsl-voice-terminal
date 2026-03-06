@@ -44,6 +44,7 @@
     commitInterimDictation,
     consumeTerminalInput,
     createDictationBuffer,
+    getRenderedInterimText,
     normalizeDictationText,
     replaceInterimDictation
   } = dictationApi
@@ -58,6 +59,7 @@
   const PLAYBACK_COOLDOWN_MS = 450
   const LIVE_DICTATION_FALLBACK_MS = 650
   const LIVE_RESULT_GRACE_MS = 900
+  const LIVE_STOP_WAIT_MS = 900
   const REPLY_HISTORY_LIMIT = 6
   const STATUS_NOTICE_MS = 2600
   const BUSY_PHASES = new Set([
@@ -79,6 +81,7 @@
   let mediaStream = null
   let mediaRecorder = null
   let speechRecognition = null
+  let liveDictationSession = null
   let currentCapture = null
   let activePointerId = null
   let pendingHoldStop = false
@@ -108,7 +111,25 @@
   terminal.open(terminalElement)
   fitAddon.fit()
   focusTerminal()
+  logRuntime('renderer.start', {
+    runtimeSupport
+  })
   terminal.attachCustomKeyEventHandler((event) => {
+    if (
+      event.type === 'keydown' &&
+      event.key?.toLowerCase() === 'c' &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      terminal.hasSelection()
+    ) {
+      event.preventDefault()
+      event.stopPropagation()
+      copyTerminalSelection().catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      return false
+    }
+
     if (
       event.type === 'keydown' &&
       event.key?.toLowerCase() === 'v' &&
@@ -322,6 +343,12 @@
   initializeUi()
 
   async function handleMicIntent(intent, { source = micState.mode } = {}) {
+    logRuntime('mic.intent', {
+      intent,
+      source,
+      mode: micState.mode
+    })
+
     switch (intent) {
       case 'focus-terminal':
         return
@@ -378,6 +405,10 @@
       lastVoiceAt = capture.startedAt
       voiceCandidateSince = 0
 
+      if (source !== MIC_MODES.AUTO) {
+        dictationBuffer = createDictationBuffer()
+      }
+
       recorder.addEventListener('dataavailable', (captureEvent) => {
         if (captureEvent.data.size > 0) {
           chunks.push(captureEvent.data)
@@ -401,8 +432,24 @@
 
           try {
             const blob = new Blob(chunks, { type: mimeType })
+            const liveSnapshot =
+              captureSource === MIC_MODES.AUTO
+                ? null
+                : await stopLiveDictation({
+                    keepTypedText: true
+                  })
 
             if (blob.size === 0) {
+              if (liveSnapshot?.text) {
+                finalizeBufferedDictationText(liveSnapshot.text)
+                transitionMic({
+                  type: 'TRANSCRIPTION_INJECTED'
+                })
+                setStatus('Transcript injected. Press Enter to run.')
+                focusTerminal()
+                return
+              }
+
               transitionMic({
                 type: 'RESET_TO_REST'
               })
@@ -422,7 +469,7 @@
               audioBuffer: await blob.arrayBuffer(),
               mimeType: blob.type || mimeType
             })
-            const injectedText = normalizeDictationText(transcript)
+            const injectedText = normalizeDictationText(transcript || liveSnapshot?.text)
 
             if (!injectedText) {
               transitionMic({
@@ -436,7 +483,11 @@
               return
             }
 
-            api.writeToPty(injectedText)
+            if (captureSource === MIC_MODES.AUTO) {
+              api.writeToPty(injectedText)
+            } else {
+              finalizeBufferedDictationText(injectedText)
+            }
 
             if (shouldAutoSubmit) {
               api.writeToPty('\r')
@@ -466,9 +517,31 @@
       )
 
       recorder.start()
+
+      if (supportsManualLiveDictation(source)) {
+        startLiveDictation({ source }).catch((error) => {
+          logRuntime('dictation.live_start_failed', {
+            source,
+            message: error instanceof Error ? error.message : String(error)
+          })
+          setStatus(
+            'Live preview is unavailable here. The final transcript will appear after capture stops.',
+            'default',
+            {
+              durationMs: 3400,
+              persistDuringBusy: true
+            }
+          )
+        })
+      }
+
       transitionMic({
         type: 'RECORDING_STARTED',
         source
+      })
+      logRuntime('mic.recording_started', {
+        source,
+        keepAutoArmed
       })
       clearStatus({ preserveErrors: false })
 
@@ -508,6 +581,10 @@
     transitionMic({
       type: 'RECORDING_STOPPING'
     })
+    logRuntime('mic.recording_stopping', {
+      reason,
+      keepAutoArmed
+    })
     mediaRecorder.stop()
     focusTerminal()
     return true
@@ -541,6 +618,7 @@
       transitionMic({
         type: 'PLAYBACK_FINISHED'
       })
+      logRuntime('speech.playback_queue_drained', {})
       return
     }
 
@@ -564,6 +642,10 @@
       URL.revokeObjectURL(objectUrl)
       activeReplyPlaybackId = ''
       renderReplyHistory()
+      logRuntime('speech.playback_finished', {
+        id: payload.id || '',
+        errorMessage: errorMessage || ''
+      })
 
       if (errorMessage) {
         setStatus(errorMessage, 'error')
@@ -585,6 +667,11 @@
     )
 
     try {
+      logRuntime('speech.playback_started', {
+        id: payload.id || '',
+        provider: payload.provider || '',
+        text: payload.text || ''
+      })
       await audio.play()
     } catch (error) {
       finalize(error.message)
@@ -649,16 +736,29 @@
       throw new Error('Clipboard does not contain text.')
     }
 
+    logRuntime('clipboard.paste_requested', {
+      text
+    })
     writePastedText(text)
   }
 
   function writePastedText(text) {
     api.writeToPty(normalizePastedText(text))
+    logRuntime('clipboard.pasted', {
+      text
+    })
     setStatus('Pasted text from clipboard.')
     focusTerminal()
   }
 
   function initializeUi() {
+    api
+      .getRuntimeInfo()
+      .then((info) => {
+        logRuntime('renderer.runtime_info', info)
+      })
+      .catch(() => {})
+
     if (!runtimeSupport.capture) {
       setStatus('Microphone capture is not available in this Electron runtime.', 'error')
     }
@@ -794,6 +894,9 @@
       type: 'SET_MODE',
       mode: nextMode
     })
+    logRuntime('mic.mode_changed', {
+      mode: nextMode
+    })
     clearStatus({ preserveErrors: false })
   }
 
@@ -813,6 +916,9 @@
       type: 'AUTO_STRATEGY_SET',
       strategy: AUTO_STRATEGIES.CAPTURE
     })
+    logRuntime('mic.auto_enabled', {
+      strategy: AUTO_STRATEGIES.CAPTURE
+    })
   }
 
   function disableAutoListening() {
@@ -821,6 +927,7 @@
     transitionMic({
       type: 'AUTO_DISARM'
     })
+    logRuntime('mic.auto_disabled', {})
 
     if (isRecording()) {
       stopRecording({ reason: 'auto-disabled' })
@@ -1036,21 +1143,44 @@
     )
   }
 
-  async function startLiveDictation() {
-    if (speechRecognition || !shouldUseLiveDictation()) {
+  function supportsManualLiveDictation(source) {
+    return Boolean(runtimeSupport.liveDictation && source !== MIC_MODES.AUTO)
+  }
+
+  async function startLiveDictation({ source = MIC_MODES.AUTO } = {}) {
+    if (
+      liveDictationSession ||
+      speechRecognition ||
+      (!shouldUseLiveDictation() && !supportsManualLiveDictation(source))
+    ) {
       return
     }
 
     const recognition = new SpeechRecognitionClass()
+    const session = createLiveDictationSession({
+      source,
+      recognition
+    })
 
     recognition.continuous = true
     recognition.interimResults = true
     recognition.maxAlternatives = 1
     recognition.lang = navigator.language || 'en-US'
 
-    recognition.addEventListener('result', handleLiveDictationResult)
+    liveDictationSession = session
+    speechRecognition = recognition
+
+    recognition.addEventListener('result', (event) => {
+      handleLiveDictationResult(event, session)
+    })
     recognition.addEventListener('error', (event) => {
+      handleLiveDictationError(event, session)
+
       if (event.error === 'aborted' || event.error === 'no-speech') {
+        return
+      }
+
+      if (source !== MIC_MODES.AUTO) {
         return
       }
 
@@ -1062,39 +1192,22 @@
       switchAutoModeToCapture(`Live dictation failed: ${event.error}. Using auto capture fallback.`)
     })
     recognition.addEventListener('end', () => {
-      const shouldRestart = recognition === speechRecognition && shouldUseLiveDictation()
-
-      commitVisibleInterimDictation()
-
-      if (recognition === speechRecognition) {
-        speechRecognition = null
-      }
-
-      renderUi()
-
-      if (!shouldRestart) {
-        return
-      }
-
-      clearLiveRecognitionRestart()
-      liveRecognitionRestartTimer = window.setTimeout(() => {
-        liveRecognitionRestartTimer = 0
-        startLiveDictation().catch((error) => {
-          setStatus(error.message, 'error')
-        })
-      }, 220)
+      handleLiveDictationEnd(session)
     })
-
-    speechRecognition = recognition
     renderUi()
+    logRuntime('dictation.live_started', {
+      source
+    })
 
     try {
       recognition.start()
     } catch (error) {
-      if (speechRecognition === recognition) {
+      if (speechRecognition === recognition && liveDictationSession === session) {
         speechRecognition = null
+        liveDictationSession = null
       }
 
+      session.resolveStopped(getLiveDictationSnapshot())
       renderUi()
       throw error
     }
@@ -1103,32 +1216,45 @@
   function stopLiveDictation({ keepTypedText = true } = {}) {
     clearLiveRecognitionRestart()
 
+    const session = liveDictationSession
+
     if (keepTypedText) {
       commitVisibleInterimDictation()
     } else {
-      clearVisibleInterimDictation()
-      dictationBuffer = createDictationBuffer()
+      clearBufferedDictationText()
     }
 
-    if (!speechRecognition) {
+    if (!session) {
       renderUi()
-      return
+      return Promise.resolve(getLiveDictationSnapshot())
     }
 
-    const activeRecognition = speechRecognition
-    speechRecognition = null
+    session.stopRequested = true
+
+    if (speechRecognition === session.recognition) {
+      speechRecognition = null
+    }
 
     try {
-      activeRecognition.stop()
+      session.recognition.stop()
     } catch (_error) {
       // Chromium can throw if stop is called during teardown.
     }
 
+    logRuntime('dictation.live_stopping', {
+      source: session.source,
+      keepTypedText
+    })
     renderUi()
+    return waitForLiveDictationToStop(session)
   }
 
-  function handleLiveDictationResult(event) {
-    if (!micState.autoEnabled || micState.mode !== MIC_MODES.AUTO) {
+  function handleLiveDictationResult(event, session) {
+    if (liveDictationSession !== session) {
+      return
+    }
+
+    if (session.source === MIC_MODES.AUTO && (!micState.autoEnabled || micState.mode !== MIC_MODES.AUTO)) {
       return
     }
 
@@ -1165,7 +1291,73 @@
     dictationBuffer = replaced.buffer
     writeAppTextToPty(replaced.eraseText)
     writeAppTextToPty(replaced.insertText)
+    logRuntime('dictation.live_result', {
+      source: session.source,
+      interimText: nextInterimText,
+      committedText: normalizeDictationText(nextBuffer.committedText)
+    })
     renderUi()
+  }
+
+  function handleLiveDictationError(event, session) {
+    logRuntime('dictation.live_error', {
+      source: session.source,
+      error: event.error || 'unknown'
+    })
+
+    if (
+      session.source !== MIC_MODES.AUTO &&
+      event.error !== 'aborted' &&
+      event.error !== 'no-speech'
+    ) {
+      setStatus(
+        'Live preview stopped. The final transcript will be injected when capture finishes.',
+        'default',
+        {
+          durationMs: 3200,
+          persistDuringBusy: true
+        }
+      )
+    }
+  }
+
+  function handleLiveDictationEnd(session) {
+    const shouldRestart =
+      liveDictationSession === session &&
+      session.source === MIC_MODES.AUTO &&
+      shouldUseLiveDictation() &&
+      !session.stopRequested
+
+    commitVisibleInterimDictation()
+
+    if (speechRecognition === session.recognition) {
+      speechRecognition = null
+    }
+
+    if (liveDictationSession === session && !shouldRestart) {
+      liveDictationSession = null
+    }
+
+    const snapshot = getLiveDictationSnapshot()
+    session.resolveStopped(snapshot)
+    renderUi()
+    logRuntime('dictation.live_ended', {
+      source: session.source,
+      restart: shouldRestart,
+      text: snapshot.text
+    })
+
+    if (!shouldRestart) {
+      return
+    }
+
+    clearLiveRecognitionRestart()
+    liveRecognitionRestartTimer = window.setTimeout(() => {
+      liveRecognitionRestartTimer = 0
+      startLiveDictation({ source: session.source }).catch((error) => {
+        setStatus(error.message, 'error')
+      })
+    }, 220)
   }
 
   function clearVisibleInterimDictation() {
@@ -1197,7 +1389,23 @@
       })
     }
 
-    if (!data || !micState.autoEnabled || micState.mode !== MIC_MODES.AUTO) {
+    if (!data) {
+      return
+    }
+
+    if (
+      liveDictationSession &&
+      liveDictationSession.source !== MIC_MODES.AUTO &&
+      data !== '\r'
+    ) {
+      const consumed = consumeTerminalInput(dictationBuffer, data)
+
+      dictationBuffer = consumed.buffer
+      writeAppTextToPty(consumed.eraseText)
+      return
+    }
+
+    if (!micState.autoEnabled || micState.mode !== MIC_MODES.AUTO) {
       return
     }
 
@@ -1274,6 +1482,21 @@
     })
   }
 
+  async function copyTerminalSelection() {
+    const text = terminal.getSelection()
+
+    if (!text) {
+      return
+    }
+
+    api.writeClipboardText(text)
+    logRuntime('clipboard.copied', {
+      text
+    })
+    setStatus('Copied selection to clipboard.')
+    focusTerminal()
+  }
+
   function transitionMic(event) {
     micState = transitionMicState(micState, event)
     renderUi()
@@ -1323,6 +1546,84 @@
     window.requestAnimationFrame(() => {
       terminal.focus()
     })
+  }
+
+  function logRuntime(type, payload = {}) {
+    if (!api.logRuntimeEvent) {
+      return
+    }
+
+    api.logRuntimeEvent({
+      type,
+      payload
+    })
+  }
+
+  function createLiveDictationSession({ source, recognition }) {
+    let resolveStopped
+
+    const stopPromise = new Promise((resolve) => {
+      resolveStopped = resolve
+    })
+
+    return {
+      source,
+      recognition,
+      stopRequested: false,
+      stopPromise,
+      resolveStopped
+    }
+  }
+
+  function waitForLiveDictationToStop(session) {
+    return Promise.race([
+      session.stopPromise,
+      new Promise((resolve) => {
+        window.setTimeout(() => {
+          resolve(getLiveDictationSnapshot())
+        }, LIVE_STOP_WAIT_MS)
+      })
+    ])
+  }
+
+  function getLiveDictationSnapshot() {
+    return {
+      text: normalizeDictationText(getVisibleDictationText())
+    }
+  }
+
+  function getVisibleDictationText() {
+    return `${dictationBuffer.committedText}${getRenderedInterimText(dictationBuffer)}`
+  }
+
+  function clearBufferedDictationText() {
+    const visibleText = getVisibleDictationText()
+
+    if (visibleText) {
+      writeAppTextToPty('\u007f'.repeat(visibleText.length))
+    }
+
+    dictationBuffer = createDictationBuffer()
+  }
+
+  function finalizeBufferedDictationText(text) {
+    const normalizedText = normalizeDictationText(text)
+    const currentText = normalizeDictationText(getVisibleDictationText())
+
+    if (!normalizedText) {
+      dictationBuffer = createDictationBuffer()
+      return
+    }
+
+    if (currentText && currentText === normalizedText) {
+      commitVisibleInterimDictation()
+      dictationBuffer = createDictationBuffer()
+      return
+    }
+
+    clearBufferedDictationText()
+    writeAppTextToPty(normalizedText)
+    dictationBuffer = createDictationBuffer()
   }
 
   function getSignalLevel(samples) {

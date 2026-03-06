@@ -5,6 +5,7 @@ const pty = require('node-pty')
 const { LocalTtsClient } = require('./lib/local-tts-client')
 const { LocalWhisperClient } = require('./lib/local-whisper-client')
 const { OpenAiAudioClient } = require('./lib/openai-audio-client')
+const { RuntimeLogger } = require('./lib/runtime-logger')
 const { runCommand } = require('./lib/run-command')
 const { TerminalSession } = require('./lib/terminal-session')
 const { TTS_PROVIDERS } = require('./lib/tts-provider-selection')
@@ -26,6 +27,9 @@ const LOCAL_WHISPER_LANGUAGE = process.env.LOCAL_WHISPER_LANGUAGE || 'en'
 
 let mainWindow = null
 let terminalSession = null
+const runtimeLogger = new RuntimeLogger({
+  baseDir: __dirname
+})
 const openAIClient = new OpenAiAudioClient({
   apiBase: OPENAI_API_BASE,
   apiKey: process.env.OPENAI_API_KEY || '',
@@ -70,9 +74,14 @@ function createWindow() {
   terminalSession = new TerminalSession({
     window: mainWindow,
     ttsService,
-    spawnPty: pty.spawn
+    spawnPty: pty.spawn,
+    logger: runtimeLogger
   })
   mainWindow.loadFile(path.join(__dirname, 'index.html'))
+  runtimeLogger.log('window.created', {
+    width: 1440,
+    height: 900
+  })
 
   mainWindow.on('closed', () => {
     terminalSession?.dispose()
@@ -82,6 +91,11 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  runtimeLogger.initSession()
+  runtimeLogger.log('app.ready', {
+    platform: process.platform,
+    runtime: runtimeLogger.getInfo()
+  })
   configureMediaPermissions(session.defaultSession)
 
   ipcMain.handle('pty:start', async (_event, dimensions) => {
@@ -97,18 +111,64 @@ app.whenReady().then(() => {
     terminalSession?.resize(dimensions)
   })
 
+  ipcMain.on('runtime:log', (_event, payload = {}) => {
+    runtimeLogger.log(payload.type || 'renderer.event', payload.payload || {})
+  })
+
+  ipcMain.handle('runtime:info', async () => {
+    return runtimeLogger.getInfo()
+  })
+
   ipcMain.handle('stt:transcribe', async (_event, payload) => {
+    const provider = openAIClient.hasApiKey() ? 'openai' : 'local-whisper'
+
+    runtimeLogger.log('stt.request', {
+      provider,
+      mimeType: payload.mimeType || ''
+    })
+
     if (openAIClient.hasApiKey()) {
-      return openAIClient.transcribeAudio(payload.audioBuffer, payload.mimeType)
+      const transcript = await openAIClient.transcribeAudio(payload.audioBuffer, payload.mimeType)
+
+      runtimeLogger.log('stt.success', {
+        provider,
+        text: transcript
+      })
+      return transcript
     }
 
-    return localWhisperClient.transcribeAudio(payload.audioBuffer, payload.mimeType, (message) => {
-      terminalSession?.send('app:status', { message })
+    const transcript = await localWhisperClient.transcribeAudio(
+      payload.audioBuffer,
+      payload.mimeType,
+      (message) => {
+        runtimeLogger.log('stt.status', {
+          provider,
+          message
+        })
+        terminalSession?.send('app:status', { message })
+      }
+    )
+
+    runtimeLogger.log('stt.success', {
+      provider,
+      text: transcript
     })
+
+    return transcript
   })
 
   ipcMain.handle('speech:preview', async (_event, payload) => {
+    runtimeLogger.log('speech.preview_request', {
+      text: payload.text || ''
+    })
+
     const audioPayload = await ttsService.synthesizeSpeech(payload.text || '')
+
+    runtimeLogger.log('speech.preview_ready', {
+      provider: audioPayload?.provider || '',
+      mimeType: audioPayload?.mimeType || '',
+      text: payload.text || ''
+    })
 
     return {
       audioBase64: audioPayload?.audioBuffer ? audioPayload.audioBuffer.toString('base64') : '',
@@ -127,6 +187,11 @@ app.whenReady().then(() => {
   })
 })
 
+app.on('before-quit', async () => {
+  await runtimeLogger.log('app.before_quit', {})
+  await runtimeLogger.flush()
+})
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
@@ -140,21 +205,37 @@ function configureMediaPermissions(electronSession) {
 
   if (typeof electronSession.setDevicePermissionHandler === 'function') {
     electronSession.setDevicePermissionHandler((details) => {
+      runtimeLogger.log('permissions.device_request', {
+        deviceType: details.deviceType || ''
+      })
       return details.deviceType === 'audioCapture'
     })
   }
 
   electronSession.setPermissionCheckHandler((_webContents, permission, _origin, details = {}) => {
-    if (isAudioMediaPermission(permission, details)) {
-      return true
-    }
+    const allowed = isAudioMediaPermission(permission, details)
 
-    return false
+    runtimeLogger.log('permissions.check', {
+      permission,
+      mediaType: details.mediaType || '',
+      mediaTypes: details.mediaTypes || [],
+      allowed
+    })
+
+    return allowed
   })
 
   electronSession.setPermissionRequestHandler(
     (_webContents, permission, callback, details = {}) => {
-      callback(isAudioMediaPermission(permission, details))
+      const allowed = isAudioMediaPermission(permission, details)
+
+      runtimeLogger.log('permissions.request', {
+        permission,
+        mediaType: details.mediaType || '',
+        mediaTypes: details.mediaTypes || [],
+        allowed
+      })
+      callback(allowed)
     }
   )
 }

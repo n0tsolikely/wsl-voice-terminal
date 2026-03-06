@@ -4,4 +4,15 @@ __pycache__/
 *.pyc
 node_modules/
 npm-debug.log*
+*.log
+coverage/
+.nyc_output/
+dist/
+out/
 voice-terminal.env.bat
+.DS_Store
+Thumbs.db
+.cache/
+.electron-gyp/
+*.tsbuildinfo
+release/
