@@ -2,7 +2,8 @@
 param(
   [switch]$NoLaunch,
   [switch]$DoctorOnly,
-  [switch]$LocalWhisperOnly
+  [switch]$LocalWhisperOnly,
+  [switch]$PreferStableRepo
 )
 
 Set-StrictMode -Version Latest
@@ -204,10 +205,14 @@ function Ensure-WingetPackage {
 function Resolve-RepoDir([string]$WingetPath) {
   $currentDir = (Get-Location).Path
 
-  if (Test-WslVoiceTerminalRepo $currentDir) {
+  if (-not $PreferStableRepo -and (Test-WslVoiceTerminalRepo $currentDir)) {
     Write-Step 'Checking current working directory'
     Write-Pass "Using current repo directory: $currentDir"
     return $currentDir
+  }
+
+  if ($PreferStableRepo) {
+    Write-Step "PreferStableRepo enabled. Using stable repo path at $StableRepoDir"
   }
 
   Write-Step "Preparing repo at $StableRepoDir"

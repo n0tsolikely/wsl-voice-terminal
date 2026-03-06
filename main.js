@@ -1,7 +1,10 @@
+const { spawn } = require('node:child_process')
 const { app, BrowserWindow, clipboard, ipcMain, session } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const pty = require('node-pty')
+const packageManifest = require('./package.json')
+const { AppUpdater, buildUpdatePrompt } = require('./lib/app-updater')
 const { LocalTtsClient } = require('./lib/local-tts-client')
 const { LocalWhisperClient } = require('./lib/local-whisper-client')
 const { OpenAiAudioClient, isInvalidApiKeyError } = require('./lib/openai-audio-client')
@@ -27,6 +30,9 @@ const LOCAL_WHISPER_LANGUAGE = process.env.LOCAL_WHISPER_LANGUAGE || 'en'
 
 let mainWindow = null
 let terminalSession = null
+let hasCheckedForAppUpdate = false
+let activeUpdateInfo = null
+let isApplyingAppUpdate = false
 const statusNoticeKeys = new Set()
 const runtimeLogger = new RuntimeLogger({
   baseDir: __dirname
@@ -60,6 +66,12 @@ const localWhisperClient = new LocalWhisperClient({
   device: LOCAL_WHISPER_DEVICE,
   computeType: LOCAL_WHISPER_COMPUTE_TYPE,
   language: LOCAL_WHISPER_LANGUAGE
+})
+const appUpdater = new AppUpdater({
+  baseDir: __dirname,
+  runCommand,
+  fetchImpl: fetch,
+  appVersion: packageManifest.version
 })
 
 function createWindow() {
@@ -116,6 +128,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('pty:start', async (_event, dimensions) => {
     terminalSession?.start(dimensions)
+    queueStartupUpdateCheck()
     return { ok: true }
   })
 
@@ -147,6 +160,72 @@ app.whenReady().then(() => {
   ipcMain.handle('clipboard:write-text', async (_event, text) => {
     clipboard.writeText(String(text || ''))
     return { ok: true }
+  })
+
+  ipcMain.handle('app:update-response', async (_event, action) => {
+    if (!activeUpdateInfo) {
+      return {
+        ok: true,
+        dismissed: true
+      }
+    }
+
+    if (action !== 'accept') {
+      runtimeLogger.log('app.update_prompt_dismissed', {
+        action: String(action || 'dismiss')
+      })
+      activeUpdateInfo = null
+
+      return {
+        ok: true,
+        dismissed: true
+      }
+    }
+
+    if (isApplyingAppUpdate) {
+      return {
+        ok: true,
+        pending: true
+      }
+    }
+
+    isApplyingAppUpdate = true
+
+    runtimeLogger.log('app.update_apply_started', {
+      strategy: activeUpdateInfo.strategy,
+      currentLabel: activeUpdateInfo.currentLabel,
+      latestLabel: activeUpdateInfo.latestLabel
+    })
+    sendStatus('Updating WSL Voice Terminal. The app will restart when it finishes.')
+
+    try {
+      const result = await appUpdater.applyUpdate()
+
+      runtimeLogger.log('app.update_apply_ready', result)
+
+      if (result.relaunchMode === 'stable') {
+        launchStableInstall(result.launchScriptPath, result.stableRepoDir)
+        app.exit(0)
+        return {
+          ok: true,
+          relaunching: true
+        }
+      }
+
+      app.relaunch()
+      app.exit(0)
+      return {
+        ok: true,
+        relaunching: true
+      }
+    } catch (error) {
+      isApplyingAppUpdate = false
+      activeUpdateInfo = null
+      runtimeLogger.log('app.update_apply_failed', {
+        message: error instanceof Error ? error.message : String(error)
+      })
+      throw error
+    }
   })
 
   ipcMain.handle('stt:transcribe', async (_event, payload) => {
@@ -303,12 +382,72 @@ function announceInitialSpeechMode() {
   }
 }
 
+function queueStartupUpdateCheck() {
+  if (hasCheckedForAppUpdate) {
+    return
+  }
+
+  hasCheckedForAppUpdate = true
+
+  checkForAppUpdate().catch((error) => {
+    runtimeLogger.log('app.update_check_failed', {
+      message: error instanceof Error ? error.message : String(error)
+    })
+  })
+}
+
+async function checkForAppUpdate() {
+  const updateInfo = await appUpdater.checkForUpdate()
+
+  runtimeLogger.log('app.update_check', {
+    available: updateInfo.available,
+    strategy: updateInfo.strategy || '',
+    reason: updateInfo.reason || '',
+    currentLabel: updateInfo.currentLabel || '',
+    latestLabel: updateInfo.latestLabel || '',
+    migratesToStablePath: Boolean(updateInfo.migratesToStablePath)
+  })
+
+  if (!updateInfo.available) {
+    return
+  }
+
+  activeUpdateInfo = updateInfo
+  terminalSession?.send('app:update-available', {
+    title: 'Update Available',
+    message: buildUpdatePrompt(updateInfo),
+    currentLabel: updateInfo.currentLabel,
+    latestLabel: updateInfo.latestLabel,
+    confirmLabel: 'Yes, update',
+    cancelLabel: 'No'
+  })
+}
+
 function sendStatus(message) {
   if (!message) {
     return
   }
 
   terminalSession?.send('app:status', { message })
+}
+
+function launchStableInstall(launchScriptPath, workingDirectory) {
+  if (!launchScriptPath) {
+    throw new Error('launch-wsl-voice-terminal.bat is missing after the update.')
+  }
+
+  const child = spawn(
+    'cmd.exe',
+    ['/c', 'start', '', launchScriptPath],
+    {
+      cwd: workingDirectory || path.dirname(launchScriptPath),
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    }
+  )
+
+  child.unref()
 }
 
 function sendStatusOnce(key, message) {

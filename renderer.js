@@ -13,6 +13,12 @@
   const speakerButton = document.getElementById('speakerButton')
   const statusElement = document.getElementById('status')
   const modeDetailElement = document.getElementById('modeDetail')
+  const updatePromptElement = document.getElementById('updatePrompt')
+  const updatePromptTitleElement = document.getElementById('updatePromptTitle')
+  const updatePromptMessageElement = document.getElementById('updatePromptMessage')
+  const updatePromptMetaElement = document.getElementById('updatePromptMeta')
+  const updatePromptConfirmButton = document.getElementById('updatePromptConfirm')
+  const updatePromptDismissButton = document.getElementById('updatePromptDismiss')
   const meterElement = document.getElementById('meter')
   const modeButtons = Array.from(document.querySelectorAll('.modeButton'))
   const meterBars = Array.from(document.querySelectorAll('.meterBar'))
@@ -119,6 +125,11 @@
   let isReplyHistoryVisible = false
   let replyHistoryHideTimer = 0
   let lastShortcutPasteAt = 0
+  let updatePromptState = {
+    visible: false,
+    busy: false,
+    payload: null
+  }
 
   terminal.loadAddon(fitAddon)
   terminal.open(terminalElement)
@@ -132,6 +143,11 @@
   window.addEventListener('paste', handleWindowPaste, true)
   window.addEventListener('pointerdown', handleGlobalPointerDown, true)
   terminal.attachCustomKeyEventHandler((event) => {
+    if (event.type === 'keydown' && isUpdatePromptVisible()) {
+      handleUpdatePromptKey(event)
+      return false
+    }
+
     if (event.type === 'keydown' && isClipboardShortcut(event, 'c') && hasCopyableSelection()) {
       event.preventDefault()
       event.stopPropagation()
@@ -206,11 +222,29 @@
     })
   })
 
+  api.onAppUpdateAvailable?.((payload) => {
+    updatePromptState = {
+      visible: true,
+      busy: false,
+      payload: payload || null
+    }
+    renderUpdatePrompt()
+    focusUpdatePrompt()
+    logRuntime('app.update_prompt_shown', {
+      currentLabel: payload?.currentLabel || '',
+      latestLabel: payload?.latestLabel || ''
+    })
+  })
+
   api
     .startPty({ cols: terminal.cols, rows: terminal.rows })
     .catch((error) => setStatus(error.message, 'error'))
 
   terminal.onData((data) => {
+    if (isUpdatePromptVisible()) {
+      return
+    }
+
     handleManualTerminalInput(data)
     api.writeToPty(data)
   })
@@ -266,6 +300,18 @@
       .finally(() => {
         focusTerminal()
       })
+  })
+
+  updatePromptConfirmButton?.addEventListener('click', () => {
+    respondToUpdatePrompt('accept').catch((error) => {
+      setStatus(error.message, 'error')
+    })
+  })
+
+  updatePromptDismissButton?.addEventListener('click', () => {
+    respondToUpdatePrompt('dismiss').catch((error) => {
+      setStatus(error.message, 'error')
+    })
   })
 
   modeButtons.forEach((button) => {
@@ -851,6 +897,7 @@
     setControlDrawerOpen(false)
     renderUi()
     renderMeterIdle()
+    renderUpdatePrompt()
   }
 
   function renderUi() {
@@ -1682,6 +1729,11 @@
       return
     }
 
+    if (isUpdatePromptVisible() && !isEditableTarget(event.target)) {
+      handleUpdatePromptKey(event)
+      return
+    }
+
     if (event.key === 'Escape' && isControlDrawerOpen && !isEditableTarget(event.target)) {
       event.preventDefault()
       event.stopPropagation()
@@ -1769,7 +1821,11 @@
       return
     }
 
-    if (controlDrawer.contains(target) || replyHistoryElement?.contains(target)) {
+    if (
+      controlDrawer.contains(target) ||
+      replyHistoryElement?.contains(target) ||
+      updatePromptElement?.contains(target)
+    ) {
       return
     }
 
@@ -1915,9 +1971,151 @@
   }
 
   function focusTerminal() {
+    if (isUpdatePromptVisible()) {
+      return
+    }
+
     window.requestAnimationFrame(() => {
       terminal.focus()
     })
+  }
+
+  function focusUpdatePrompt() {
+    if (!isUpdatePromptVisible()) {
+      return
+    }
+
+    window.requestAnimationFrame(() => {
+      updatePromptConfirmButton?.focus()
+    })
+  }
+
+  function isUpdatePromptVisible() {
+    return Boolean(updatePromptState.visible && updatePromptState.payload)
+  }
+
+  function renderUpdatePrompt() {
+    if (!updatePromptElement) {
+      return
+    }
+
+    const visible = isUpdatePromptVisible()
+
+    updatePromptElement.hidden = !visible
+    updatePromptElement.dataset.visible = String(visible)
+
+    if (!visible) {
+      return
+    }
+
+    const payload = updatePromptState.payload || {}
+
+    if (updatePromptTitleElement) {
+      updatePromptTitleElement.textContent = payload.title || 'Update Available'
+    }
+
+    if (updatePromptMessageElement) {
+      updatePromptMessageElement.textContent = payload.message || ''
+    }
+
+    if (updatePromptMetaElement) {
+      updatePromptMetaElement.textContent =
+        payload.currentLabel && payload.latestLabel
+          ? `${payload.currentLabel} -> ${payload.latestLabel}`
+          : ''
+    }
+
+    if (updatePromptConfirmButton) {
+      updatePromptConfirmButton.textContent = updatePromptState.busy
+        ? 'Updating...'
+        : payload.confirmLabel || 'Yes, update'
+      updatePromptConfirmButton.disabled = updatePromptState.busy
+    }
+
+    if (updatePromptDismissButton) {
+      updatePromptDismissButton.textContent = payload.cancelLabel || 'No'
+      updatePromptDismissButton.disabled = updatePromptState.busy
+    }
+  }
+
+  function handleUpdatePromptKey(event) {
+    if (!isUpdatePromptVisible()) {
+      return
+    }
+
+    if (event.type !== 'keydown') {
+      return
+    }
+
+    const key = String(event.key || '').toLowerCase()
+
+    if (!['y', 'n', 'enter', 'escape'].includes(key)) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (key === 'y' || key === 'enter') {
+      respondToUpdatePrompt('accept').catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      return
+    }
+
+    respondToUpdatePrompt('dismiss').catch((error) => {
+      setStatus(error.message, 'error')
+    })
+  }
+
+  async function respondToUpdatePrompt(action) {
+    if (!isUpdatePromptVisible() || !api.respondToAppUpdate) {
+      updatePromptState = {
+        visible: false,
+        busy: false,
+        payload: null
+      }
+      renderUpdatePrompt()
+      focusTerminal()
+      return
+    }
+
+    if (action !== 'accept') {
+      await api.respondToAppUpdate('dismiss')
+      updatePromptState = {
+        visible: false,
+        busy: false,
+        payload: null
+      }
+      renderUpdatePrompt()
+      focusTerminal()
+      return
+    }
+
+    if (updatePromptState.busy) {
+      return
+    }
+
+    updatePromptState = {
+      ...updatePromptState,
+      busy: true
+    }
+    renderUpdatePrompt()
+
+    try {
+      await api.respondToAppUpdate('accept')
+    } catch (error) {
+      updatePromptState = {
+        visible: false,
+        busy: false,
+        payload: null
+      }
+      renderUpdatePrompt()
+      focusTerminal()
+      throw error
+    }
   }
 
   function logRuntime(type, payload = {}) {

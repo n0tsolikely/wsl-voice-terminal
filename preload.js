@@ -23,10 +23,12 @@ contextBridge.exposeInMainWorld('terminalAPI', {
   writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
   logRuntimeEvent: (payload) => ipcRenderer.send('runtime:log', payload),
   getRuntimeInfo: () => ipcRenderer.invoke('runtime:info'),
+  respondToAppUpdate: (action) => ipcRenderer.invoke('app:update-response', action),
   onPtyData: (handler) => subscribe('pty:data', handler),
   onPtyExit: (handler) => subscribe('pty:exit', handler),
   onSpeechFinalized: (handler) => subscribe('speech:finalized', handler),
   onSpeechAudio: (handler) => subscribe('speech:audio', handler),
+  onAppUpdateAvailable: (handler) => subscribe('app:update-available', handler),
   onStatus: (handler) => subscribe('app:status', handler),
   onError: (handler) => subscribe('app:error', handler)
 })

@@ -37,6 +37,7 @@ What the installer does:
 - creates `.env` from `.env.example` if needed
 - creates `.local-whisper-venv` and installs `requirements.local-whisper.txt` if present
 - launches the app when setup finishes
+- future launches can prompt inside the app when a newer GitHub version is available
 
 ## Speech
 
@@ -55,6 +56,12 @@ What the installer does:
 2. Copy `.env.example` to `.env` if you want to set an OpenAI key, choose a TTS provider, or tweak local whisper settings
 3. Optional: `npm run install:local-whisper` if you want to prewarm local Whisper before the first launch
 4. Double-click `launch-wsl-voice-terminal.bat`
+
+## Updates
+
+- Standard installs from `install.ps1` can check GitHub on startup and prompt in-app when a newer version is available.
+- Choosing `Yes` runs the same installer/update path, then restarts the app.
+- Manual or mirrored copies can still update, but the app may migrate them into `%USERPROFILE%\\wsl-voice-terminal` so future updates stay simple.
 
 ## Notes
 

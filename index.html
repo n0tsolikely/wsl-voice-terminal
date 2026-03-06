@@ -88,6 +88,99 @@
         pointer-events: none;
       }
 
+      #updatePrompt {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        opacity: 0;
+        pointer-events: none;
+        background: rgba(5, 5, 5, 0.18);
+        transition: opacity 160ms ease;
+      }
+
+      #updatePrompt[data-visible="true"] {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      #updatePromptCard {
+        width: min(440px, calc(100vw - 40px));
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 18px 18px 16px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 20px;
+        background: rgba(9, 9, 9, 0.92);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(18px);
+      }
+
+      #updatePromptTitle {
+        margin: 0;
+        color: #f6f6f6;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+
+      #updatePromptMessage {
+        margin: 0;
+        color: rgba(255, 255, 255, 0.76);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      #updatePromptMeta {
+        color: rgba(255, 255, 255, 0.52);
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      #updatePromptActions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+
+      .updatePromptButton {
+        min-height: 38px;
+        padding: 0 16px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.82);
+        font: inherit;
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition:
+          border-color 140ms ease,
+          background 140ms ease,
+          transform 140ms ease,
+          opacity 140ms ease;
+      }
+
+      .updatePromptButton:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.28);
+      }
+
+      .updatePromptButton[data-variant="primary"] {
+        border-color: rgba(181, 199, 255, 0.42);
+        background: rgba(91, 124, 255, 0.22);
+        color: #dbe5ff;
+      }
+
+      .updatePromptButton:disabled {
+        opacity: 0.6;
+        cursor: wait;
+        transform: none;
+      }
+
       #hudRail {
         position: absolute;
         top: var(--terminal-frame-padding);
@@ -589,6 +682,24 @@
       <div id="terminal"></div>
     </div>
     <div id="overlay">
+      <div id="updatePrompt" data-visible="false" hidden>
+        <div id="updatePromptCard" role="dialog" aria-modal="true" aria-labelledby="updatePromptTitle">
+          <h2 id="updatePromptTitle">Update Available</h2>
+          <p id="updatePromptMessage"></p>
+          <div id="updatePromptMeta"></div>
+          <div id="updatePromptActions">
+            <button id="updatePromptDismiss" class="updatePromptButton" type="button">No</button>
+            <button
+              id="updatePromptConfirm"
+              class="updatePromptButton"
+              data-variant="primary"
+              type="button"
+            >
+              Yes, update
+            </button>
+          </div>
+        </div>
+      </div>
       <div id="hudRail">
         <div id="controlDrawer" data-open="false">
           <div id="hudTopRow">
