@@ -1,9 +1,9 @@
 (function bootstrapMicControls(root) {
-  const MIC_MODES = {
-    HOLD: 'hold',
-    TOGGLE: 'toggle',
-    AUTO: 'auto'
-  }
+  const micStateApi =
+    typeof module !== 'undefined' && module.exports
+      ? require('./lib/mic-state')
+      : root.WslVoiceTerminalMicState
+  const { MIC_MODES, getEnterIntentForMicState } = micStateApi
 
   function shouldConsumeEnterForMic({
     eventType,
@@ -17,11 +17,18 @@
       return false
     }
 
-    if (micMode !== MIC_MODES.TOGGLE && micMode !== MIC_MODES.AUTO) {
-      return false
-    }
-
-    return Boolean(isRecording || isStoppingRecording || isTranscribing)
+    return (
+      getEnterIntentForMicState({
+        mode: micMode,
+        phase: isRecording
+          ? 'recording'
+          : isStoppingRecording
+            ? 'stopping'
+            : isTranscribing
+              ? 'transcribing'
+              : 'idle'
+      }) !== 'pass-through'
+    )
   }
 
   const api = {
