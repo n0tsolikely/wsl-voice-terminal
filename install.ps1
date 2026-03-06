@@ -150,22 +150,96 @@ function Get-VsWherePath {
   return $vswherePath
 }
 
-function Test-VsCppBuildTools {
-  $result = [PSCustomObject]@{
-    Detected = $false
-    Source = $null
-    Detail = $null
+function Get-FirstStringValue([object]$Value) {
+  if ($null -eq $Value) {
+    return $null
   }
+
+  if ($Value -is [string]) {
+    $trimmed = $Value.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+      return $null
+    }
+    return $trimmed
+  }
+
+  if ($Value -is [System.Array]) {
+    foreach ($item in $Value) {
+      $normalized = Get-FirstStringValue -Value $item
+      if ($normalized) {
+        return $normalized
+      }
+    }
+    return $null
+  }
+
+  $asString = [string]$Value
+  if ([string]::IsNullOrWhiteSpace($asString)) {
+    return $null
+  }
+  return $asString.Trim()
+}
+
+function New-VsCppState {
+  param(
+    [bool]$VsInstalled = $false,
+    [bool]$ToolsetReady = $false,
+    [bool]$CoreFeaturesOnly = $false,
+    [string]$Source = $null,
+    [string]$Detail = $null
+  )
+
+  return [PSCustomObject]@{
+    VsInstalled = $VsInstalled
+    ToolsetReady = $ToolsetReady
+    CoreFeaturesOnly = $CoreFeaturesOnly
+    Source = $Source
+    Detail = $Detail
+  }
+}
+
+function New-VsInstallStatus {
+  param(
+    [Parameter(Mandatory = $true)]
+    [pscustomobject]$Result,
+    [bool]$Installed = $false,
+    [bool]$AutoInstallAttempted = $false
+  )
+
+  return [PSCustomObject]@{
+    Result = $Result
+    Installed = $Installed
+    ToolsetReady = [bool]$Result.ToolsetReady
+    VsInstalled = [bool]$Result.VsInstalled
+    CoreFeaturesOnly = [bool]$Result.CoreFeaturesOnly
+    AutoInstallAttempted = $AutoInstallAttempted
+  }
+}
+
+function Test-VsCppBuildTools {
+  $result = New-VsCppState
 
   $vswhere = Get-VsWherePath
   if ($vswhere) {
     try {
-      $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+      $toolsetPath = Get-FirstStringValue -Value (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null)
+      if ($toolsetPath) {
+        return (New-VsCppState -VsInstalled $true -ToolsetReady $true -Source 'vswhere:toolset' -Detail $toolsetPath)
+      }
+
+      $installPath = Get-FirstStringValue -Value (& $vswhere -latest -products * -property installationPath 2>$null)
       if ($installPath) {
-        $result.Detected = $true
+        $result.VsInstalled = $true
         $result.Source = 'vswhere'
-        $result.Detail = $installPath.Trim()
-        return $result
+        $result.Detail = $installPath
+      }
+
+      $corePath = Get-FirstStringValue -Value (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.CoreBuildTools -property installationPath 2>$null)
+      if ($corePath -and -not $result.ToolsetReady) {
+        $result.CoreFeaturesOnly = $true
+        if (-not $result.Detail) {
+          $result.Detail = $corePath
+        }
       }
     } catch {
       # Ignore and fall back to file checks.
@@ -177,70 +251,50 @@ function Test-VsCppBuildTools {
     return $result
   }
 
-  $vsRoot = Join-Path $programFilesX86 'Microsoft Visual Studio'
-  if ($vsRoot -is [System.Array]) {
-    $vsRoot = $vsRoot | Select-Object -First 1
-  }
-
-  $childPaths = @(
-    '2022\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
-    '2022\Community\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
-    '2022\Professional\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
-    '2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe'
-  )
-
-  $patterns = foreach ($child in $childPaths) {
-    if (-not $child) {
-      continue
-    }
-    if ($child -is [System.Array]) {
-      $child = $child | Select-Object -First 1
-    }
-    Join-Path -Path $vsRoot -ChildPath $child
-  }
-
-  foreach ($pattern in $patterns) {
-    if (-not $pattern) {
-      continue
-    }
-    if ($pattern -is [System.Array]) {
-      $pattern = $pattern | Select-Object -First 1
-    }
-    $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($match) {
-      $result.Detected = $true
-      $result.Source = 'cl.exe'
-      $result.Detail = $match.FullName
-      break
-    }
-  }
-
-  if ($result.Detected) {
+  $vsRoot = Get-FirstStringValue -Value (Join-Path -Path $programFilesX86 -ChildPath 'Microsoft Visual Studio')
+  if (-not $vsRoot) {
     return $result
   }
 
-  $registryRoots = @(
-    'HKLM:\SOFTWARE\Microsoft\VisualStudio\Setup\Instances',
-    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\Setup\Instances'
-  )
-
-  foreach ($root in $registryRoots) {
-    if (-not (Test-Path $root)) {
-      continue
+  $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+  foreach ($edition in $editions) {
+    $editionRoot = Join-Path -Path $vsRoot -ChildPath ("2022\{0}\VC\Tools\MSVC" -f $edition)
+    $pattern = Join-Path -Path $editionRoot -ChildPath '*\bin\Hostx64\x64\cl.exe'
+    $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($match) {
+      return (New-VsCppState -VsInstalled $true -ToolsetReady $true -Source 'cl.exe' -Detail $match.FullName)
     }
+  }
 
-    $instances = Get-ChildItem -Path $root -ErrorAction SilentlyContinue
-    foreach ($instance in $instances) {
-      try {
-        $props = Get-ItemProperty -Path $instance.PSPath -ErrorAction SilentlyContinue
-        if ($props.InstallationPath) {
-          $result.Detected = $true
-          $result.Source = 'registry'
-          $result.Detail = $props.InstallationPath
-          return $result
+  if ($result.ToolsetReady) {
+    return $result
+  }
+
+  if (-not $result.VsInstalled) {
+    $registryRoots = @(
+      'HKLM:\SOFTWARE\Microsoft\VisualStudio\Setup\Instances',
+      'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\Setup\Instances'
+    )
+
+    foreach ($root in $registryRoots) {
+      if (-not (Test-Path $root)) {
+        continue
+      }
+
+      $instances = Get-ChildItem -Path $root -ErrorAction SilentlyContinue
+      foreach ($instance in $instances) {
+        try {
+          $props = Get-ItemProperty -Path $instance.PSPath -ErrorAction SilentlyContinue
+          $installationPath = Get-FirstStringValue -Value $props.InstallationPath
+          if ($installationPath) {
+            $result.VsInstalled = $true
+            $result.Source = 'registry'
+            $result.Detail = $installationPath
+            return $result
+          }
+        } catch {
+          # Ignore registry read failures.
         }
-      } catch {
-        # Ignore registry read failures.
       }
     }
   }
@@ -252,48 +306,48 @@ function Get-VsCppGuidance {
   return 'Install Visual Studio Build Tools or Visual Studio and include the "Desktop development with C++" workload, then rerun npm install (and npm run rebuild:native if needed).'
 }
 
+function Get-VsToolsetMissingFailMessage {
+  return 'Visual Studio Build Tools are installed, but the required VC++ toolset is still missing. Install Visual Studio Build Tools with the "Desktop development with C++" workload (or equivalent VC++ components), then rerun install.ps1.'
+}
+
 function Ensure-VsBuildTools([string]$WingetPath) {
   Write-Step 'Checking Visual Studio C++ build tools'
   try {
     $vsCpp = Test-VsCppBuildTools
   } catch {
     Write-Warn 'Visual Studio build tools detection encountered an internal check error. Continuing with guidance-based fallback.'
-    $vsCpp = [PSCustomObject]@{
-      Detected = $false
-      Source = 'error'
-      Detail = $null
-    }
-  }
-  if ($vsCpp.Detected) {
-    Write-Pass ("Visual Studio C++ build tools detected ({0})" -f $vsCpp.Detail)
-    return @{
-      Result = $vsCpp
-      Installed = $false
-    }
+    $vsCpp = New-VsCppState -Source 'error'
   }
 
-  Write-Warn 'Visual Studio C++ build tools not detected.'
+  if ($vsCpp.ToolsetReady) {
+    Write-Pass ("Visual Studio C++ build tools detected ({0})" -f $vsCpp.Detail)
+    return (New-VsInstallStatus -Result $vsCpp)
+  }
+
+  if ($vsCpp.VsInstalled) {
+    Write-Warn 'Visual Studio Build Tools are installed, but the required VC++ toolset/workload is missing.'
+    if ($vsCpp.CoreFeaturesOnly) {
+      Write-Warn 'Visual Studio reports C++ core features, but no usable VC++ toolset for node-gyp.'
+    }
+  } else {
+    Write-Warn 'Visual Studio C++ build tools not detected.'
+  }
+
   Write-Warn 'node-pty requires native compilation on some systems.'
   Write-Warn (Get-VsCppGuidance)
 
   if (-not $WingetPath) {
-    return @{
-      Result = $vsCpp
-      Installed = $false
-    }
+    return (New-VsInstallStatus -Result $vsCpp)
   }
 
   $response = Read-Host 'Install Visual Studio Build Tools now? (y/N)'
   if ($response -notmatch '^(y|yes)$') {
     Write-Warn 'Skipping Visual Studio Build Tools install.'
-    return @{
-      Result = $vsCpp
-      Installed = $false
-    }
+    return (New-VsInstallStatus -Result $vsCpp)
   }
 
   Write-Install 'Installing Visual Studio Build Tools with winget'
-  Invoke-Checked -FilePath $WingetPath -Arguments @(
+  $null = Invoke-Checked -FilePath $WingetPath -Arguments @(
     'install',
     '--id',
     'Microsoft.VisualStudio.2022.BuildTools',
@@ -301,22 +355,29 @@ function Ensure-VsBuildTools([string]$WingetPath) {
     '--source',
     'winget',
     '--accept-package-agreements',
-    '--accept-source-agreements'
+    '--accept-source-agreements',
+    '--override',
+    '--passive --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --includeRecommended'
   )
-  Write-Warn 'During the installer UI, select the "Desktop development with C++" workload.'
+  Write-Warn 'If prompted by the Visual Studio installer UI, keep "Desktop development with C++" selected.'
   Refresh-Path
 
-  $vsCpp = Test-VsCppBuildTools
-  if ($vsCpp.Detected) {
+  try {
+    $vsCpp = Test-VsCppBuildTools
+  } catch {
+    Write-Warn 'Visual Studio build tools detection encountered an internal check error. Continuing with guidance-based fallback.'
+    $vsCpp = New-VsCppState -Source 'error'
+  }
+
+  if ($vsCpp.ToolsetReady) {
     Write-Pass ("Visual Studio C++ build tools detected ({0})" -f $vsCpp.Detail)
+  } elseif ($vsCpp.VsInstalled) {
+    Write-Warn 'Visual Studio Build Tools are installed, but the required VC++ toolset/workload is missing.'
   } else {
     Write-Warn 'Visual Studio C++ build tools are still not detected.'
   }
 
-  return @{
-    Result = $vsCpp
-    Installed = $true
-  }
+  return (New-VsInstallStatus -Result $vsCpp -Installed $true -AutoInstallAttempted $true)
 }
 
 function Test-Git {
@@ -587,6 +648,10 @@ function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
   }
 
   $vsInstall = Ensure-VsBuildTools -WingetPath $WingetPath
+  if ($null -eq $vsInstall -or -not $vsInstall.PSObject.Properties['Installed']) {
+    $fallbackVsState = New-VsCppState -Source 'fallback'
+    $vsInstall = New-VsInstallStatus -Result $fallbackVsState
+  }
 
   $nodePtyRequired = Test-NodePtyDependency -RepoDir $RepoDir
 
@@ -601,7 +666,7 @@ function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
     Write-Warn ("npm install failed: {0}" -f $_.Exception.Message)
   }
 
-  if (-not $npmSucceeded -and $vsInstall.Installed) {
+  if (-not $npmSucceeded -and $vsInstall.Installed -and $vsInstall.ToolsetReady) {
     Write-Install 'Retrying npm install after Visual Studio Build Tools install'
     try {
       Invoke-Checked -FilePath 'npm' -Arguments @('install') -WorkingDirectory $RepoDir
@@ -610,6 +675,10 @@ function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
     } catch {
       Write-Warn ("npm install retry failed: {0}" -f $_.Exception.Message)
     }
+  }
+
+  if (-not $npmSucceeded -and $vsInstall.Installed -and -not $vsInstall.ToolsetReady) {
+    Stop-Install (Get-VsToolsetMissingFailMessage)
   }
 
   $needsRebuild = $false
@@ -661,6 +730,10 @@ function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
     } else {
       Stop-Install ("node-pty failed to build. {0}" -f (Get-VsCppGuidance))
     }
+  }
+
+  if (-not $npmSucceeded -and $vsInstall.VsInstalled -and -not $vsInstall.ToolsetReady) {
+    Stop-Install (Get-VsToolsetMissingFailMessage)
   }
 
   if (-not $npmSucceeded) {
