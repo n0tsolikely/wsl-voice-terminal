@@ -1,10 +1,13 @@
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, session } = require('electron')
 const { spawn } = require('node:child_process')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
 const pty = require('node-pty')
+const { LocalTtsClient } = require('./lib/local-tts-client')
+const { TTS_PROVIDERS } = require('./lib/tts-provider-selection')
+const { TtsService } = require('./lib/tts-service')
 const {
   extractSpeechText,
   getLastNonEmptyLine,
@@ -18,6 +21,8 @@ const TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1
 const TTS_MODEL = process.env.OPENAI_TTS_MODEL || 'tts-1'
 const TTS_VOICE = process.env.OPENAI_TTS_VOICE || 'alloy'
 const TTS_FORMAT = 'mp3'
+const TTS_PROVIDER = process.env.TTS_PROVIDER || TTS_PROVIDERS.AUTO
+const LOCAL_TTS_VOICE = process.env.LOCAL_TTS_VOICE || ''
 const LOCAL_WHISPER_MODEL = process.env.LOCAL_WHISPER_MODEL || 'base.en'
 const LOCAL_WHISPER_DEVICE = process.env.LOCAL_WHISPER_DEVICE || 'cpu'
 const LOCAL_WHISPER_COMPUTE_TYPE = process.env.LOCAL_WHISPER_COMPUTE_TYPE || 'int8'
@@ -33,9 +38,7 @@ class OpenAIClient {
     const apiKey = process.env.OPENAI_API_KEY
 
     if (!apiKey) {
-      throw new Error(
-        'OPENAI_API_KEY is missing. Local transcription fallback is available, but TTS still needs an API key.'
-      )
+      throw new Error('OPENAI_API_KEY is missing.')
     }
 
     return apiKey
@@ -278,6 +281,7 @@ class LocalWhisperClient {
 class CodexSpeechInterceptor {
   constructor(onFinalizedText) {
     this.onFinalizedText = onFinalizedText
+    this.finalizeDelayMs = 550
     this.reset()
   }
 
@@ -366,7 +370,7 @@ class CodexSpeechInterceptor {
 
     this.idleTimer = setTimeout(() => {
       this.maybeFinalize()
-    }, 1200)
+    }, this.finalizeDelayMs)
   }
 
   maybeFinalize() {
@@ -455,9 +459,9 @@ class CodexSpeechInterceptor {
 }
 
 class TerminalSession {
-  constructor(window, openAIClient) {
+  constructor(window, ttsService) {
     this.window = window
-    this.openAIClient = openAIClient
+    this.ttsService = ttsService
     this.ptyProcess = null
     this.speechQueue = Promise.resolve()
     this.speechInterceptor = new CodexSpeechInterceptor((spokenText) => {
@@ -540,17 +544,32 @@ class TerminalSession {
   }
 
   queueSpeech(text) {
+    const messageId = crypto.randomUUID()
+
+    this.send('speech:finalized', {
+      id: messageId,
+      text
+    })
+
     this.speechQueue = this.speechQueue
       .then(async () => {
-        const audioBuffer = await this.openAIClient.synthesizeSpeech(text)
+        const audioPayload = await this.ttsService.synthesizeSpeech(text)
 
-        if (!audioBuffer) {
+        if (!audioPayload?.audioBuffer) {
           return
         }
 
+        if (audioPayload.fallbackFrom === TTS_PROVIDERS.OPENAI) {
+          this.send('app:status', {
+            message: 'OpenAI TTS was unavailable. Using local Windows voice.'
+          })
+        }
+
         this.send('speech:audio', {
-          audioBase64: audioBuffer.toString('base64'),
-          mimeType: 'audio/mpeg',
+          id: messageId,
+          audioBase64: audioPayload.audioBuffer.toString('base64'),
+          mimeType: audioPayload.mimeType,
+          provider: audioPayload.provider,
           text
         })
       })
@@ -577,6 +596,17 @@ class TerminalSession {
 let mainWindow = null
 let terminalSession = null
 const openAIClient = new OpenAIClient()
+const localTtsClient = new LocalTtsClient({
+  baseDir: __dirname,
+  runCommand,
+  voice: LOCAL_TTS_VOICE,
+  maxTtsChars: MAX_TTS_CHARS
+})
+const ttsService = new TtsService({
+  requestedProvider: TTS_PROVIDER,
+  openAiAudioClient: openAIClient,
+  localTtsClient
+})
 const localWhisperClient = new LocalWhisperClient()
 
 function createWindow() {
@@ -593,7 +623,7 @@ function createWindow() {
     }
   })
 
-  terminalSession = new TerminalSession(mainWindow, openAIClient)
+  terminalSession = new TerminalSession(mainWindow, ttsService)
   mainWindow.loadFile(path.join(__dirname, 'index.html'))
 
   mainWindow.on('closed', () => {
@@ -604,6 +634,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  configureMediaPermissions(session.defaultSession)
+
   ipcMain.handle('pty:start', async (_event, dimensions) => {
     terminalSession?.start(dimensions)
     return { ok: true }
@@ -628,11 +660,12 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('speech:preview', async (_event, payload) => {
-    const audioBuffer = await openAIClient.synthesizeSpeech(payload.text || '')
+    const audioPayload = await ttsService.synthesizeSpeech(payload.text || '')
 
     return {
-      audioBase64: audioBuffer ? audioBuffer.toString('base64') : '',
-      mimeType: 'audio/mpeg',
+      audioBase64: audioPayload?.audioBuffer ? audioPayload.audioBuffer.toString('base64') : '',
+      mimeType: audioPayload?.mimeType || 'audio/mpeg',
+      provider: audioPayload?.provider || '',
       text: payload.text || ''
     }
   })
@@ -659,6 +692,48 @@ function splitArgs(rawArgs) {
 
   const matches = rawArgs.match(/(?:[^\s"]+|"[^"]*")+/g) || []
   return matches.map((entry) => entry.replace(/^"(.*)"$/, '$1'))
+}
+
+function configureMediaPermissions(electronSession) {
+  if (!electronSession) {
+    return
+  }
+
+  if (typeof electronSession.setDevicePermissionHandler === 'function') {
+    electronSession.setDevicePermissionHandler((details) => {
+      return details.deviceType === 'audioCapture'
+    })
+  }
+
+  electronSession.setPermissionCheckHandler((_webContents, permission, _origin, details = {}) => {
+    if (isAudioMediaPermission(permission, details)) {
+      return true
+    }
+
+    return false
+  })
+
+  electronSession.setPermissionRequestHandler(
+    (_webContents, permission, callback, details = {}) => {
+      callback(isAudioMediaPermission(permission, details))
+    }
+  )
+}
+
+function isAudioMediaPermission(permission, details = {}) {
+  if (permission === 'audioCapture') {
+    return true
+  }
+
+  if (permission !== 'media') {
+    return false
+  }
+
+  if (Array.isArray(details.mediaTypes)) {
+    return details.mediaTypes.includes('audio')
+  }
+
+  return details.mediaType === 'audio'
 }
 
 function loadDotEnv(dotEnvPath) {

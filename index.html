@@ -89,6 +89,91 @@
         pointer-events: none;
       }
 
+      #panelStack {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      #replyHistory {
+        width: 320px;
+        max-height: 220px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        overflow-y: auto;
+        pointer-events: auto;
+      }
+
+      #replyHistory[hidden] {
+        display: none;
+      }
+
+      .replyItem {
+        display: flex;
+        align-items: flex-end;
+        gap: 8px;
+        padding: 10px 10px 10px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        background: rgba(8, 8, 8, 0.82);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+        backdrop-filter: blur(16px);
+      }
+
+      .replyText {
+        flex: 1;
+        color: rgba(255, 255, 255, 0.82);
+        font-size: 11px;
+        line-height: 1.45;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      .replySpeakButton {
+        width: 28px;
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(145, 191, 255, 0.28);
+        border-radius: 999px;
+        background: rgba(91, 124, 255, 0.16);
+        color: #dbe5ff;
+        font: inherit;
+        cursor: pointer;
+        transition:
+          border-color 140ms ease,
+          background 140ms ease,
+          transform 140ms ease,
+          opacity 140ms ease;
+      }
+
+      .replySpeakButton:hover {
+        transform: translateY(-1px);
+        border-color: rgba(181, 199, 255, 0.42);
+        background: rgba(91, 124, 255, 0.24);
+      }
+
+      .replySpeakButton[data-active="true"] {
+        border-color: rgba(181, 199, 255, 0.52);
+        background: rgba(91, 124, 255, 0.3);
+      }
+
+      .replySpeakButton:disabled {
+        cursor: wait;
+        opacity: 0.6;
+        transform: none;
+      }
+
+      .replySpeakButton svg {
+        width: 14px;
+        height: 14px;
+      }
+
       #controlPanel {
         min-width: 280px;
         display: flex;
@@ -304,34 +389,37 @@
       <div id="terminal"></div>
     </div>
     <div id="overlay">
-      <div id="controlPanel">
-        <div id="status" aria-live="polite">Click mic to talk. Press Enter to stop.</div>
-        <div id="modeDetail">Click once to record. Click again or press Enter to stop.</div>
-        <div id="meter" aria-hidden="true">
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-          <span class="meterBar"></span>
-        </div>
-        <div id="actionRow">
-          <div id="modeSelector" aria-label="Microphone mode">
-            <button class="modeButton" data-mode="hold" type="button">Hold</button>
-            <button class="modeButton" data-mode="toggle" type="button">Click</button>
-            <button class="modeButton" data-mode="auto" type="button">Auto</button>
+      <div id="panelStack">
+        <div id="replyHistory" aria-live="polite" hidden></div>
+        <div id="controlPanel">
+          <div id="status" aria-live="polite">Click mic to talk. Press Enter to stop.</div>
+          <div id="modeDetail">Click once to record. Click again or press Enter to stop.</div>
+          <div id="meter" aria-hidden="true">
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
+            <span class="meterBar"></span>
           </div>
-          <button id="speakerButton" type="button">Test Voice</button>
+          <div id="actionRow">
+            <div id="modeSelector" aria-label="Microphone mode">
+              <button class="modeButton" data-mode="hold" type="button">Hold</button>
+              <button class="modeButton" data-mode="toggle" type="button">Click</button>
+              <button class="modeButton" data-mode="auto" type="button">Auto</button>
+            </div>
+            <button id="speakerButton" type="button">Test Voice</button>
+          </div>
         </div>
       </div>
       <button id="micButton" type="button" aria-label="Hold to dictate">

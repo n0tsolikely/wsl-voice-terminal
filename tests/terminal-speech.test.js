@@ -55,3 +55,17 @@ test('extractSpeechText returns empty for command-heavy output', () => {
 
   assert.equal(output, '')
 })
+
+test('extractSpeechText ignores Codex prompt chrome like tips and context meters', () => {
+  const input = [
+    'I fixed the audio path and lowered the idle delay so replies speak faster.',
+    '',
+    'Tip: Press # to search files.',
+    'gpt-5-codex high 86% context left',
+    '> '
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I fixed the audio path and lowered the idle delay so replies speak faster.')
+})

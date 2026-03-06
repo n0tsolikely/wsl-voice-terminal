@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('terminalAPI', {
   readClipboardText: () => clipboard.readText(),
   onPtyData: (handler) => subscribe('pty:data', handler),
   onPtyExit: (handler) => subscribe('pty:exit', handler),
+  onSpeechFinalized: (handler) => subscribe('speech:finalized', handler),
   onSpeechAudio: (handler) => subscribe('speech:audio', handler),
   onStatus: (handler) => subscribe('app:status', handler),
   onError: (handler) => subscribe('app:error', handler)
