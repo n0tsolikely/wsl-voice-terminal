@@ -100,6 +100,14 @@ test('extractSpeechText strips decorative bullet markers from real reply text', 
   )
 })
 
+test('extractSpeechText keeps short conversational replies when they are the actual assistant output', () => {
+  const input = ['• Hello.', '', '› Use /skills to list available skills'].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'Hello.')
+})
+
 test('extractSpeechText ignores pending-steer and Codex footer lines', () => {
   const input = [
     '! pending steer: Ask for more tests.',

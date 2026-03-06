@@ -87,6 +87,17 @@ test('finalizes when Codex returns to a prompt with no space and a footer line',
   assert.deepEqual(emitted, ['Here is the final answer.'])
 })
 
+test('finalizes short Codex replies when the prompt returns', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Use /skills to list available skills\n')
+  interceptor.observeInput('hello\r')
+  interceptor.observeOutput('• Hello.\n› Use /skills to list available skills\n')
+
+  assert.equal(interceptor.flush(), 'Hello.')
+  assert.deepEqual(emitted, ['Hello.'])
+})
+
 test('does not finalize Codex prompt placeholder text as a reply before the real answer arrives', () => {
   const { interceptor, emitted } = createInterceptor()
 
