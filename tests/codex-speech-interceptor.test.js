@@ -63,6 +63,30 @@ test('finalizes when the alternate screen exits even if no prompt text is visibl
   assert.deepEqual(emitted, ['Here is the final answer.'])
 })
 
+test('finalizes when Codex returns to a prompt line with placeholder text', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Write tests for @filename\n')
+  interceptor.observeInput('Explain it\r')
+  interceptor.observeOutput('Here is the final answer.\n› Write tests for @filename\n')
+
+  assert.equal(interceptor.flush(), 'Here is the final answer.')
+  assert.deepEqual(emitted, ['Here is the final answer.'])
+})
+
+test('finalizes when Codex returns to a prompt with no space and a footer line', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n›Write tests for @filename\n  gpt-5.4 xhigh · 93% left · /mnt/c/Users/peter\n')
+  interceptor.observeInput('Explain it\r')
+  interceptor.observeOutput(
+    'Here is the final answer.\n›Write tests for @filename\n  gpt-5.4 xhigh · 93% left · /mnt/c/Users/peter\n'
+  )
+
+  assert.equal(interceptor.flush(), 'Here is the final answer.')
+  assert.deepEqual(emitted, ['Here is the final answer.'])
+})
+
 test('does not emit duplicates when flushed repeatedly after completion', () => {
   const { interceptor, emitted } = createInterceptor()
 

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session } = require('electron')
+const { app, BrowserWindow, clipboard, ipcMain, session } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const pty = require('node-pty')
@@ -29,6 +29,10 @@ let mainWindow = null
 let terminalSession = null
 const runtimeLogger = new RuntimeLogger({
   baseDir: __dirname
+})
+const appLogger = runtimeLogger.child({
+  component: 'app',
+  processType: 'main'
 })
 const openAIClient = new OpenAiAudioClient({
   apiBase: OPENAI_API_BASE,
@@ -71,14 +75,21 @@ function createWindow() {
     }
   })
 
+  const windowLogger = runtimeLogger.child({
+    component: 'window',
+    processType: 'main',
+    windowId: mainWindow.id
+  })
   terminalSession = new TerminalSession({
     window: mainWindow,
     ttsService,
     spawnPty: pty.spawn,
-    logger: runtimeLogger
+    logger: windowLogger.child({
+      component: 'terminal'
+    })
   })
   mainWindow.loadFile(path.join(__dirname, 'index.html'))
-  runtimeLogger.log('window.created', {
+  windowLogger.log('window.created', {
     width: 1440,
     height: 900
   })
@@ -92,7 +103,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   runtimeLogger.initSession()
-  runtimeLogger.log('app.ready', {
+  appLogger.log('app.ready', {
     platform: process.platform,
     runtime: runtimeLogger.getInfo()
   })
@@ -112,11 +123,25 @@ app.whenReady().then(() => {
   })
 
   ipcMain.on('runtime:log', (_event, payload = {}) => {
-    runtimeLogger.log(payload.type || 'renderer.event', payload.payload || {})
+    const window = BrowserWindow.fromWebContents(_event.sender)
+
+    runtimeLogger.log(payload.type || 'renderer.event', payload.payload || {}, {
+      component: 'renderer',
+      processType: 'renderer',
+      webContentsId: _event.sender.id,
+      windowId: window?.id || null
+    })
   })
 
   ipcMain.handle('runtime:info', async () => {
     return runtimeLogger.getInfo()
+  })
+
+  ipcMain.handle('clipboard:read-text', async () => clipboard.readText())
+
+  ipcMain.handle('clipboard:write-text', async (_event, text) => {
+    clipboard.writeText(String(text || ''))
+    return { ok: true }
   })
 
   ipcMain.handle('stt:transcribe', async (_event, payload) => {
@@ -188,7 +213,7 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', async () => {
-  await runtimeLogger.log('app.before_quit', {})
+  await appLogger.log('app.before_quit', {})
   await runtimeLogger.flush()
 })
 
@@ -207,6 +232,9 @@ function configureMediaPermissions(electronSession) {
     electronSession.setDevicePermissionHandler((details) => {
       runtimeLogger.log('permissions.device_request', {
         deviceType: details.deviceType || ''
+      }, {
+        component: 'permissions',
+        processType: 'main'
       })
       return details.deviceType === 'audioCapture'
     })
@@ -220,6 +248,9 @@ function configureMediaPermissions(electronSession) {
       mediaType: details.mediaType || '',
       mediaTypes: details.mediaTypes || [],
       allowed
+    }, {
+      component: 'permissions',
+      processType: 'main'
     })
 
     return allowed
@@ -234,6 +265,9 @@ function configureMediaPermissions(electronSession) {
         mediaType: details.mediaType || '',
         mediaTypes: details.mediaTypes || [],
         allowed
+      }, {
+        component: 'permissions',
+        processType: 'main'
       })
       callback(allowed)
     }

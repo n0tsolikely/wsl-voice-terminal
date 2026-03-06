@@ -5,6 +5,9 @@
   const terminalElement = document.getElementById('terminal')
   const replyHistoryElement = document.getElementById('replyHistory')
   const controlPanel = document.getElementById('controlPanel')
+  const controlDrawer = document.getElementById('controlDrawer')
+  const drawerToggleButton = document.getElementById('drawerToggle')
+  const replyHistoryToggleButton = document.getElementById('replyHistoryToggle')
   const micButton = document.getElementById('micButton')
   const speakerButton = document.getElementById('speakerButton')
   const statusElement = document.getElementById('status')
@@ -48,11 +51,11 @@
     normalizeDictationText,
     replaceInterimDictation
   } = dictationApi
-  const AUTO_MIN_START_THRESHOLD = 0.02
-  const AUTO_MIN_CONTINUE_THRESHOLD = 0.014
-  const AUTO_START_MARGIN = 0.008
-  const AUTO_CONTINUE_MARGIN = 0.004
-  const AUTO_START_HOLD_MS = 140
+  const AUTO_MIN_START_THRESHOLD = 0.012
+  const AUTO_MIN_CONTINUE_THRESHOLD = 0.008
+  const AUTO_START_MARGIN = 0.004
+  const AUTO_CONTINUE_MARGIN = 0.002
+  const AUTO_START_HOLD_MS = 120
   const AUTO_STOP_SILENCE_MS = 900
   const AUTO_NOISE_FLOOR_ALPHA = 0.08
   const MIN_RECORDING_MS = 320
@@ -61,6 +64,7 @@
   const LIVE_RESULT_GRACE_MS = 900
   const LIVE_STOP_WAIT_MS = 900
   const REPLY_HISTORY_LIMIT = 6
+  const REPLY_HISTORY_AUTO_HIDE_MS = 15000
   const STATUS_NOTICE_MS = 2600
   const BUSY_PHASES = new Set([
     MIC_PHASES.RECORDING,
@@ -106,6 +110,11 @@
   const playbackQueue = []
   const replyMessages = []
   let isPlayingAudio = false
+  let isControlDrawerOpen = false
+  let isReplyHistoryPinned = false
+  let isReplyHistoryVisible = false
+  let replyHistoryHideTimer = 0
+  let lastShortcutPasteAt = 0
 
   terminal.loadAddon(fitAddon)
   terminal.open(terminalElement)
@@ -114,14 +123,12 @@
   logRuntime('renderer.start', {
     runtimeSupport
   })
+  window.addEventListener('keydown', handleGlobalKeyDown, true)
+  window.addEventListener('copy', handleWindowCopy, true)
+  window.addEventListener('paste', handleWindowPaste, true)
+  window.addEventListener('pointerdown', handleGlobalPointerDown, true)
   terminal.attachCustomKeyEventHandler((event) => {
-    if (
-      event.type === 'keydown' &&
-      event.key?.toLowerCase() === 'c' &&
-      (event.ctrlKey || event.metaKey) &&
-      !event.altKey &&
-      terminal.hasSelection()
-    ) {
+    if (event.type === 'keydown' && isClipboardShortcut(event, 'c') && hasCopyableSelection()) {
       event.preventDefault()
       event.stopPropagation()
       copyTerminalSelection().catch((error) => {
@@ -130,12 +137,7 @@
       return false
     }
 
-    if (
-      event.type === 'keydown' &&
-      event.key?.toLowerCase() === 'v' &&
-      (event.ctrlKey || event.metaKey) &&
-      !event.altKey
-    ) {
+    if (event.type === 'keydown' && isClipboardShortcut(event, 'v')) {
       event.preventDefault()
       event.stopPropagation()
       pasteClipboardText().catch((error) => {
@@ -207,20 +209,32 @@
   })
 
   window.addEventListener('resize', debounce(resizeTerminal, 80))
-  window.addEventListener('paste', (event) => {
-    const text = event.clipboardData?.getData('text/plain')
+  drawerToggleButton?.addEventListener('click', () => {
+    setControlDrawerOpen(!isControlDrawerOpen)
 
-    if (!text) {
-      return
+    if (!isControlDrawerOpen) {
+      focusTerminal()
+    }
+  })
+  replyHistoryToggleButton?.addEventListener('click', () => {
+    isReplyHistoryPinned = !isReplyHistoryPinned
+
+    if (isReplyHistoryPinned) {
+      clearReplyHistoryHideTimer()
+      isReplyHistoryVisible = replyMessages.length > 0
+    } else if (replyMessages.length > 0) {
+      isReplyHistoryVisible = true
+      scheduleReplyHistoryHide()
     }
 
-    event.preventDefault()
-    writePastedText(text)
+    renderReplyHistory()
+    focusTerminal()
   })
 
   modeButtons.forEach((button) => {
     button.addEventListener('click', () => {
       setMicMode(button.dataset.mode)
+      setControlDrawerOpen(false)
       focusTerminal()
     })
   })
@@ -233,6 +247,7 @@
 
     try {
       isPreviewRequestPending = true
+      setControlDrawerOpen(false)
       renderUi()
       setStatus('Requesting test voice...', 'default', {
         sticky: true,
@@ -619,12 +634,16 @@
         type: 'PLAYBACK_FINISHED'
       })
       logRuntime('speech.playback_queue_drained', {})
+      scheduleReplyHistoryHide()
       return
     }
 
     const payload = playbackQueue.shift()
 
     activeReplyPlaybackId = payload.id || ''
+    revealReplyHistory({
+      sticky: true
+    })
     renderReplyHistory()
 
     const bytes = base64ToUint8Array(payload.audioBase64)
@@ -641,6 +660,9 @@
       finished = true
       URL.revokeObjectURL(objectUrl)
       activeReplyPlaybackId = ''
+      if (!isReplyHistoryPinned) {
+        scheduleReplyHistoryHide()
+      }
       renderReplyHistory()
       logRuntime('speech.playback_finished', {
         id: payload.id || '',
@@ -730,7 +752,7 @@
   }
 
   async function pasteClipboardText() {
-    const text = api.readClipboardText()
+    const text = await api.readClipboardText()
 
     if (!text) {
       throw new Error('Clipboard does not contain text.')
@@ -743,7 +765,7 @@
   }
 
   function writePastedText(text) {
-    api.writeToPty(normalizePastedText(text))
+    terminal.paste(normalizePastedText(text))
     logRuntime('clipboard.pasted', {
       text
     })
@@ -763,6 +785,7 @@
       setStatus('Microphone capture is not available in this Electron runtime.', 'error')
     }
 
+    setControlDrawerOpen(false)
     renderUi()
     renderMeterIdle()
   }
@@ -801,6 +824,7 @@
     speakerButton.disabled = isPreviewRequestPending
     micButton.disabled = micDisabled
     micButton.dataset.state = viewModel.buttonVisualState
+    micButton.dataset.monitoring = String(Boolean(analyser && viewModel.shouldShowMeter))
     micButton.setAttribute('aria-label', viewModel.buttonLabel)
     micButton.setAttribute(
       'aria-pressed',
@@ -809,8 +833,15 @@
           (micState.mode === MIC_MODES.AUTO && micState.autoEnabled)
       )
     )
+    drawerToggleButton.textContent = `Voice: ${formatModeLabel(micState.mode)}`
+    drawerToggleButton.setAttribute(
+      'aria-label',
+      `${isControlDrawerOpen ? 'Hide' : 'Show'} voice controls. Current mode: ${formatModeLabel(micState.mode)}.`
+    )
 
-    meterElement.dataset.active = String(Boolean(analyser && viewModel.shouldShowMeter))
+    if (meterElement) {
+      meterElement.dataset.active = String(Boolean(analyser && viewModel.shouldShowMeter))
+    }
     modeDetailElement.textContent = modeDetail
     modeDetailElement.dataset.tone =
       micState.mode === MIC_MODES.AUTO && !supportsAutoMode() ? 'muted' : 'default'
@@ -909,16 +940,28 @@
     clearStatus({ preserveErrors: false })
     await ensureMicrophoneReady()
     resetAutoTracking()
+    const strategy = hasLiveDictationSupport() ? AUTO_STRATEGIES.LIVE : AUTO_STRATEGIES.CAPTURE
     transitionMic({
       type: 'AUTO_ARM'
     })
     transitionMic({
       type: 'AUTO_STRATEGY_SET',
-      strategy: AUTO_STRATEGIES.CAPTURE
+      strategy
     })
     logRuntime('mic.auto_enabled', {
-      strategy: AUTO_STRATEGIES.CAPTURE
+      strategy
     })
+
+    if (strategy !== AUTO_STRATEGIES.LIVE) {
+      return
+    }
+
+    try {
+      await startLiveDictation({ source: MIC_MODES.AUTO })
+    } catch (_error) {
+      disableLiveDictationForSession('start-failed')
+      switchAutoModeToCapture('Live dictation is unavailable here. Using auto capture fallback.')
+    }
   }
 
   function disableAutoListening() {
@@ -985,6 +1028,7 @@
       analyser.getByteFrequencyData(frequencyData)
       analyser.getByteTimeDomainData(timeDomainData)
       const level = getSignalLevel(timeDomainData)
+      const autoLevel = getAutoListeningLevel(level, frequencyData)
 
       if (shouldShowLiveMeter()) {
         renderMeter(frequencyData, level)
@@ -992,7 +1036,7 @@
         renderMeterIdle()
       }
 
-      processAutoListening(level)
+      processAutoListening(autoLevel)
     } else {
       renderMeterIdle()
     }
@@ -1001,6 +1045,7 @@
   }
 
   function renderMeter(data, level) {
+    let strongestBand = 0
     const binsPerBar = Math.max(1, Math.floor(data.length / meterBars.length))
 
     meterBars.forEach((bar, index) => {
@@ -1017,9 +1062,12 @@
       const average = count ? total / count / 255 : 0
       const scale = clamp(Math.max(0.08, average * 1.35 + level * 0.95), 0.08, 1)
 
+      strongestBand = Math.max(strongestBand, scale)
       bar.style.setProperty('--bar-scale', scale.toFixed(3))
       bar.dataset.active = String(scale > 0.2)
     })
+
+    updateMicVisualLevel(Math.max(level, strongestBand))
   }
 
   function renderMeterIdle() {
@@ -1028,6 +1076,8 @@
       bar.style.setProperty('--bar-scale', restingScale.toFixed(3))
       bar.dataset.active = 'false'
     })
+
+    updateMicVisualLevel(0)
   }
 
   function processAutoListening(level) {
@@ -1046,11 +1096,8 @@
 
     if (shouldUseLiveDictation()) {
       maybeFallbackFromLiveDictation(level, now)
-
-      if (hasRecentLiveDictationActivity(now)) {
-        voiceCandidateSince = 0
-        return
-      }
+      processAutoLiveListening(level, now, continueThreshold)
+      return
     }
 
     if (isPlayingAudio || now < playbackQuietUntil) {
@@ -1107,6 +1154,27 @@
     voiceCandidateSince = 0
   }
 
+  function processAutoLiveListening(level, now, continueThreshold) {
+    if (isPlayingAudio || now < playbackQuietUntil) {
+      voiceCandidateSince = 0
+      return
+    }
+
+    if (level >= continueThreshold || hasRecentLiveDictationActivity(now)) {
+      lastVoiceAt = now
+      voiceCandidateSince = 0
+      return
+    }
+
+    if (!hasBufferedAutoLiveText()) {
+      return
+    }
+
+    if (lastVoiceAt && now - lastVoiceAt >= AUTO_STOP_SILENCE_MS) {
+      submitAutoLiveDictation()
+    }
+  }
+
   function updateAutoNoiseFloor(level) {
     autoNoiseFloor =
       autoNoiseFloor * (1 - AUTO_NOISE_FLOOR_ALPHA) + level * AUTO_NOISE_FLOOR_ALPHA
@@ -1134,9 +1202,13 @@
     return Boolean(analyser && timeDomainData && frequencyData)
   }
 
+  function hasLiveDictationSupport() {
+    return Boolean(runtimeSupport.liveDictation && micState.liveDictationSupported)
+  }
+
   function shouldUseLiveDictation() {
     return Boolean(
-      runtimeSupport.liveDictation &&
+      hasLiveDictationSupport() &&
         micState.mode === MIC_MODES.AUTO &&
         micState.autoEnabled &&
         micState.autoStrategy === AUTO_STRATEGIES.LIVE
@@ -1144,7 +1216,21 @@
   }
 
   function supportsManualLiveDictation(source) {
-    return Boolean(runtimeSupport.liveDictation && source !== MIC_MODES.AUTO)
+    return Boolean(hasLiveDictationSupport() && source !== MIC_MODES.AUTO)
+  }
+
+  function disableLiveDictationForSession(errorCode) {
+    if (!micState.liveDictationSupported) {
+      return
+    }
+
+    transitionMic({
+      type: 'LIVE_DICTATION_SUPPORT_SET',
+      supported: false
+    })
+    logRuntime('dictation.live_disabled', {
+      error: errorCode || 'unknown'
+    })
   }
 
   async function startLiveDictation({ source = MIC_MODES.AUTO } = {}) {
@@ -1258,6 +1344,10 @@
       return
     }
 
+    if (session.source === MIC_MODES.AUTO && (isPlayingAudio || performance.now() < playbackQuietUntil)) {
+      return
+    }
+
     lastLiveResultAt = performance.now()
     liveFallbackVoiceSince = 0
     let nextInterimText = ''
@@ -1300,18 +1390,24 @@
   }
 
   function handleLiveDictationError(event, session) {
+    const errorCode = event.error || 'unknown'
+
     logRuntime('dictation.live_error', {
       source: session.source,
-      error: event.error || 'unknown'
+      error: errorCode
     })
+
+    if (errorCode !== 'aborted' && errorCode !== 'no-speech') {
+      disableLiveDictationForSession(errorCode)
+    }
 
     if (
       session.source !== MIC_MODES.AUTO &&
-      event.error !== 'aborted' &&
-      event.error !== 'no-speech'
+      errorCode !== 'aborted' &&
+      errorCode !== 'no-speech'
     ) {
       setStatus(
-        'Live preview stopped. The final transcript will be injected when capture finishes.',
+        'Live preview is unavailable in this runtime. Final transcription will still be injected when capture finishes.',
         'default',
         {
           durationMs: 3200,
@@ -1415,6 +1511,10 @@
     writeAppTextToPty(consumed.eraseText)
   }
 
+  function hasBufferedAutoLiveText() {
+    return Boolean(normalizeDictationText(getVisibleDictationText()))
+  }
+
   function shouldShowLiveMeter() {
     if (!analyser) {
       return false
@@ -1483,18 +1583,204 @@
   }
 
   async function copyTerminalSelection() {
-    const text = terminal.getSelection()
+    const text = getCopyableSelectionText()
 
     if (!text) {
-      return
+      return false
     }
 
-    api.writeClipboardText(text)
+    await api.writeClipboardText(text)
+    if (terminal.hasSelection()) {
+      terminal.clearSelection()
+    }
     logRuntime('clipboard.copied', {
       text
     })
     setStatus('Copied selection to clipboard.')
     focusTerminal()
+    return true
+  }
+
+  function handleGlobalKeyDown(event) {
+    if (event.defaultPrevented) {
+      return
+    }
+
+    if (event.key === 'Escape' && isControlDrawerOpen && !isEditableTarget(event.target)) {
+      event.preventDefault()
+      event.stopPropagation()
+      setControlDrawerOpen(false)
+      focusTerminal()
+      return
+    }
+
+    if (isEditableTarget(event.target)) {
+      return
+    }
+
+    if (isClipboardShortcut(event, 'c') && hasCopyableSelection()) {
+      event.preventDefault()
+      event.stopPropagation()
+      copyTerminalSelection().catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      return
+    }
+
+    if (isClipboardShortcut(event, 'v')) {
+      event.preventDefault()
+      event.stopPropagation()
+      lastShortcutPasteAt = performance.now()
+      pasteClipboardText().catch((error) => {
+        setStatus(error.message, 'error')
+      })
+    }
+  }
+
+  function handleWindowCopy(event) {
+    if (isEditableTarget(event.target)) {
+      return
+    }
+
+    const text = getCopyableSelectionText()
+
+    if (!text) {
+      return
+    }
+
+    if (event.clipboardData) {
+      event.clipboardData.setData('text/plain', text)
+    } else {
+      void api.writeClipboardText(text).catch(() => {})
+    }
+
+    if (terminal.hasSelection()) {
+      terminal.clearSelection()
+    }
+
+    event.preventDefault()
+    setStatus('Copied selection to clipboard.')
+  }
+
+  function handleWindowPaste(event) {
+    if (isEditableTarget(event.target)) {
+      return
+    }
+
+    if (lastShortcutPasteAt && performance.now() - lastShortcutPasteAt < 160) {
+      event.preventDefault()
+      return
+    }
+
+    const text = event.clipboardData?.getData('text/plain')
+
+    if (!text) {
+      return
+    }
+
+    event.preventDefault()
+    writePastedText(text)
+  }
+
+  function handleGlobalPointerDown(event) {
+    if (!isControlDrawerOpen || !controlDrawer) {
+      return
+    }
+
+    const target = event.target instanceof Node ? event.target : null
+
+    if (!target) {
+      return
+    }
+
+    if (controlDrawer.contains(target) || replyHistoryElement?.contains(target)) {
+      return
+    }
+
+    setControlDrawerOpen(false)
+  }
+
+  function isClipboardShortcut(event, key) {
+    return (
+      event.key?.toLowerCase() === key &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      !event.shiftKey
+    )
+  }
+
+  function isEditableTarget(target) {
+    if (!target || target === terminal.textarea) {
+      return false
+    }
+
+    const element = target instanceof Element ? target : null
+
+    if (!element) {
+      return false
+    }
+
+    return Boolean(element.closest('input, textarea, [contenteditable="true"]'))
+  }
+
+  function hasCopyableSelection() {
+    return Boolean(getCopyableSelectionText())
+  }
+
+  function getCopyableSelectionText() {
+    const terminalText = terminal.getSelection()
+
+    if (terminalText && terminalText.trim()) {
+      return terminalText
+    }
+
+    const browserText = String(window.getSelection?.().toString() || '')
+
+    return browserText.trim() ? browserText : ''
+  }
+
+  function setControlDrawerOpen(isOpen) {
+    isControlDrawerOpen = Boolean(isOpen)
+
+    if (controlDrawer) {
+      controlDrawer.dataset.open = String(isControlDrawerOpen)
+    }
+
+    if (drawerToggleButton) {
+      drawerToggleButton.setAttribute('aria-expanded', String(isControlDrawerOpen))
+    }
+  }
+
+  function updateMicVisualLevel(level) {
+    micButton.style.setProperty('--mic-level', clamp(level, 0, 1).toFixed(3))
+    micButton.dataset.listening = String(
+      clamp(level, 0, 1) > 0.04 && (micState.phase === MIC_PHASES.RECORDING || micState.phase === MIC_PHASES.ARMED)
+    )
+  }
+
+  function submitAutoLiveDictation() {
+    const text = normalizeDictationText(getVisibleDictationText())
+
+    if (!text) {
+      return false
+    }
+
+    commitVisibleInterimDictation()
+    api.writeToPty('\r')
+    dictationBuffer = createDictationBuffer()
+    voiceCandidateSince = 0
+    lastVoiceAt = 0
+    liveFallbackVoiceSince = 0
+    lastLiveResultAt = 0
+    logRuntime('dictation.live_auto_sent', {
+      text
+    })
+    setStatus('Transcript sent. Auto listening stays on.', 'default', {
+      durationMs: 2200,
+      persistDuringBusy: true
+    })
+    focusTerminal()
+    return true
   }
 
   function transitionMic(event) {
@@ -1524,6 +1810,18 @@
 
   function isAutoArmed() {
     return micState.mode === MIC_MODES.AUTO && micState.autoEnabled
+  }
+
+  function formatModeLabel(mode) {
+    switch (mode) {
+      case MIC_MODES.HOLD:
+        return 'Hold'
+      case MIC_MODES.AUTO:
+        return 'Auto'
+      case MIC_MODES.TOGGLE:
+      default:
+        return 'Click'
+    }
   }
 
   function isBusyMicPhase(phase) {
@@ -1637,6 +1935,43 @@
     return Math.sqrt(sumSquares / samples.length)
   }
 
+  function getAutoListeningLevel(level, data) {
+    const speechBandLevel = getSpeechBandLevel(data)
+
+    return clamp(Math.max(level * 0.95, speechBandLevel * 0.9), 0, 1)
+  }
+
+  function getSpeechBandLevel(data) {
+    if (!data?.length) {
+      return 0
+    }
+
+    const sampleRate = audioContext?.sampleRate || 48000
+    const binWidth = (sampleRate / 2) / data.length
+    const voiceStart = Math.max(1, Math.floor(180 / binWidth))
+    const voiceEnd = Math.min(data.length, Math.ceil(3200 / binWidth))
+    const rumbleEnd = Math.max(1, Math.floor(140 / binWidth))
+    let voiceTotal = 0
+    let voiceCount = 0
+    let rumbleTotal = 0
+    let rumbleCount = 0
+
+    for (let index = voiceStart; index < voiceEnd; index += 1) {
+      voiceTotal += data[index]
+      voiceCount += 1
+    }
+
+    for (let index = 0; index < rumbleEnd; index += 1) {
+      rumbleTotal += data[index]
+      rumbleCount += 1
+    }
+
+    const voiceAverage = voiceCount ? voiceTotal / voiceCount / 255 : 0
+    const rumbleAverage = rumbleCount ? rumbleTotal / rumbleCount / 255 : 0
+
+    return clamp(voiceAverage - rumbleAverage * 0.35, 0, 1)
+  }
+
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value))
   }
@@ -1697,6 +2032,7 @@
     }
 
     trimReplyHistory()
+    revealReplyHistory()
     renderReplyHistory()
   }
 
@@ -1723,6 +2059,7 @@
     message.audioBase64 = payload.audioBase64 || message.audioBase64
     message.mimeType = payload.mimeType || message.mimeType || 'audio/mpeg'
     message.provider = payload.provider || message.provider
+    revealReplyHistory()
     renderReplyHistory()
   }
 
@@ -1733,11 +2070,16 @@
   }
 
   function renderReplyHistory() {
-    if (!replyHistoryElement) {
+    if (!replyHistoryElement || !replyHistoryToggleButton) {
       return
     }
 
+    const shouldShow = shouldShowReplyHistory()
+
     replyHistoryElement.hidden = replyMessages.length === 0
+    replyHistoryElement.dataset.visible = String(shouldShow)
+    replyHistoryToggleButton.dataset.active = String(isReplyHistoryPinned || shouldShow)
+    replyHistoryToggleButton.setAttribute('aria-pressed', String(isReplyHistoryPinned))
     replyHistoryElement.replaceChildren()
 
     for (const message of replyMessages) {
@@ -1775,6 +2117,9 @@
     }
 
     try {
+      revealReplyHistory({
+        sticky: true
+      })
       message.isLoadingAudio = !message.audioBase64
       renderReplyHistory()
 
@@ -1808,6 +2153,49 @@
       renderReplyHistory()
       focusTerminal()
     }
+  }
+
+  function revealReplyHistory({ sticky = false } = {}) {
+    if (!replyMessages.length) {
+      isReplyHistoryVisible = false
+      clearReplyHistoryHideTimer()
+      return
+    }
+
+    isReplyHistoryVisible = true
+
+    if (sticky || isReplyHistoryPinned || activeReplyPlaybackId) {
+      clearReplyHistoryHideTimer()
+      return
+    }
+
+    scheduleReplyHistoryHide()
+  }
+
+  function scheduleReplyHistoryHide() {
+    clearReplyHistoryHideTimer()
+
+    if (isReplyHistoryPinned || activeReplyPlaybackId || !replyMessages.length) {
+      return
+    }
+
+    replyHistoryHideTimer = window.setTimeout(() => {
+      isReplyHistoryVisible = false
+      renderReplyHistory()
+    }, REPLY_HISTORY_AUTO_HIDE_MS)
+  }
+
+  function clearReplyHistoryHideTimer() {
+    if (!replyHistoryHideTimer) {
+      return
+    }
+
+    window.clearTimeout(replyHistoryHideTimer)
+    replyHistoryHideTimer = 0
+  }
+
+  function shouldShowReplyHistory() {
+    return Boolean(replyMessages.length && (isReplyHistoryVisible || isReplyHistoryPinned || activeReplyPlaybackId))
   }
 
   function debounce(fn, delay) {

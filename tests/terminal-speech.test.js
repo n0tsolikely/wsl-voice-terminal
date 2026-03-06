@@ -69,3 +69,33 @@ test('extractSpeechText ignores Codex prompt chrome like tips and context meters
 
   assert.equal(output, 'I fixed the audio path and lowered the idle delay so replies speak faster.')
 })
+
+test('extractSpeechText ignores Codex progress chrome and command tree lines', () => {
+  const input = [
+    '• Ran npm test',
+    '└ node --test',
+    '',
+    'I fixed the clipboard shortcuts and compacted the voice drawer.',
+    '',
+    '› Write tests for @filename'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I fixed the clipboard shortcuts and compacted the voice drawer.')
+})
+
+test('extractSpeechText ignores pending-steer and Codex footer lines', () => {
+  const input = [
+    '! pending steer: Ask for more tests.',
+    '',
+    'I fixed the clipboard bridge and the reply playback trigger.',
+    '',
+    'gpt-5.4 xhigh · 93% left · /mnt/c/Users/peter',
+    '›Write tests for @filename'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I fixed the clipboard bridge and the reply playback trigger.')
+})

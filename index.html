@@ -12,6 +12,10 @@
         --terminal-frame-padding: 12px;
         --terminal-scrollbar-width: 16px;
         --terminal-scrollbar-gap: 6px;
+        --hud-right-offset: calc(
+          var(--terminal-frame-padding) + var(--terminal-scrollbar-width) +
+            var(--terminal-scrollbar-gap) + 8px
+        );
       }
 
       * {
@@ -40,7 +44,6 @@
       #terminal {
         width: 100%;
         height: 100%;
-        padding-right: calc(var(--terminal-scrollbar-width) + var(--terminal-scrollbar-gap));
       }
 
       #terminal .xterm,
@@ -73,40 +76,137 @@
         background: rgba(255, 255, 255, 0.56);
       }
 
-      #terminal .xterm-screen,
       #terminal .xterm-selection {
-        margin-right: calc(var(--terminal-scrollbar-width) + var(--terminal-scrollbar-gap));
+        pointer-events: none;
+        clip-path: inset(0 calc(var(--terminal-scrollbar-width) + var(--terminal-scrollbar-gap)) 0 0);
       }
 
       #overlay {
         position: absolute;
-        right: 48px;
-        bottom: 28px;
-        display: flex;
-        align-items: flex-end;
-        gap: 12px;
+        inset: 0;
         z-index: 20;
         pointer-events: none;
       }
 
-      #panelStack {
+      #hudRail {
+        position: absolute;
+        top: var(--terminal-frame-padding);
+        right: var(--hud-right-offset);
         display: flex;
         flex-direction: column;
+        align-items: flex-end;
+        gap: 10px;
+      }
+
+      #controlDrawer {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 10px;
+        pointer-events: auto;
+      }
+
+      #hudTopRow {
+        display: flex;
+        align-items: center;
         gap: 8px;
       }
 
+      #drawerToggle {
+        min-height: 34px;
+        padding: 0 14px;
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        background: rgba(8, 8, 8, 0.86);
+        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.3);
+        backdrop-filter: blur(16px);
+        color: rgba(255, 255, 255, 0.82);
+        font: inherit;
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition:
+          border-color 140ms ease,
+          background 140ms ease,
+          transform 140ms ease;
+      }
+
+      #drawerToggle:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.28);
+      }
+
+      #drawerToggle::after {
+        content: "+";
+        font-size: 14px;
+        line-height: 1;
+        opacity: 0.74;
+      }
+
+      #controlDrawer[data-open="true"] #drawerToggle::after {
+        content: "-";
+      }
+
+      #replyHistoryToggle {
+        width: 34px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        background: rgba(8, 8, 8, 0.86);
+        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.3);
+        backdrop-filter: blur(16px);
+        color: rgba(255, 255, 255, 0.78);
+        font: inherit;
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition:
+          border-color 140ms ease,
+          background 140ms ease,
+          transform 140ms ease,
+          color 140ms ease;
+      }
+
+      #replyHistoryToggle:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.28);
+      }
+
+      #replyHistoryToggle[data-active="true"] {
+        border-color: rgba(181, 199, 255, 0.42);
+        background: rgba(91, 124, 255, 0.2);
+        color: #dbe5ff;
+      }
+
       #replyHistory {
-        width: 320px;
-        max-height: 220px;
+        width: min(320px, calc(100vw - 96px));
+        max-height: 32vh;
         display: flex;
         flex-direction: column;
         gap: 8px;
         overflow-y: auto;
-        pointer-events: auto;
+        opacity: 0;
+        transform: translateY(-6px);
+        pointer-events: none;
+        transition:
+          opacity 180ms ease,
+          transform 180ms ease;
       }
 
       #replyHistory[hidden] {
         display: none;
+      }
+
+      #replyHistory[data-visible="true"] {
+        opacity: 1;
+        transform: none;
+        pointer-events: auto;
       }
 
       .replyItem {
@@ -175,23 +275,51 @@
       }
 
       #controlPanel {
-        min-width: 280px;
+        width: min(260px, calc(100vw - 96px));
         display: flex;
         flex-direction: column;
-        gap: 10px;
+        gap: 12px;
         padding: 14px;
         border: 1px solid rgba(255, 255, 255, 0.12);
         border-radius: 20px;
         background: rgba(8, 8, 8, 0.86);
         box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34);
         backdrop-filter: blur(16px);
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(-8px) scale(0.96);
+        transform-origin: top right;
+        max-height: 0;
+        overflow: hidden;
+        transition:
+          opacity 160ms ease,
+          transform 160ms ease,
+          max-height 180ms ease;
+      }
+
+      #controlDrawer[data-open="true"] #controlPanel {
         pointer-events: auto;
+        opacity: 1;
+        transform: none;
+        max-height: 280px;
+      }
+
+      #statusDock {
+        position: absolute;
+        right: var(--hud-right-offset);
+        bottom: 104px;
+        max-width: min(360px, calc(100vw - 104px));
+        pointer-events: none;
       }
 
       #status {
-        min-width: 220px;
-        padding: 0;
+        min-width: 200px;
+        padding: 10px 14px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
         border-radius: 999px;
+        background: rgba(8, 8, 8, 0.86);
+        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.26);
+        backdrop-filter: blur(16px);
         color: #f3f3f3;
         font-size: 12px;
         letter-spacing: 0.02em;
@@ -200,10 +328,12 @@
 
       #status[data-tone="error"] {
         color: #ffb0b0;
+        border-color: rgba(255, 149, 149, 0.3);
+        background: rgba(44, 10, 10, 0.9);
       }
 
       #modeDetail {
-        min-height: 32px;
+        min-height: 28px;
         color: rgba(255, 255, 255, 0.66);
         font-size: 11px;
         letter-spacing: 0.015em;
@@ -215,45 +345,17 @@
       }
 
       #meter {
-        height: 34px;
-        display: grid;
-        grid-template-columns: repeat(16, minmax(0, 1fr));
-        gap: 4px;
-        align-items: end;
-      }
-
-      #meter[data-active="false"] .meterBar {
-        opacity: 0.2;
-      }
-
-      .meterBar {
-        height: 100%;
-        border-radius: 999px;
-        background: linear-gradient(180deg, rgba(255, 186, 94, 0.95), rgba(255, 90, 90, 0.55));
-        box-shadow: 0 0 16px rgba(255, 112, 112, 0.16);
-        opacity: 0.38;
-        transform: scaleY(var(--bar-scale, 0.12));
-        transform-origin: center bottom;
-        transition:
-          transform 70ms linear,
-          opacity 70ms linear,
-          background 160ms ease;
-      }
-
-      .meterBar[data-active="true"] {
-        opacity: 0.95;
+        display: none;
       }
 
       #modeSelector {
-        flex: 1;
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
       }
 
       #actionRow {
-        display: flex;
-        align-items: center;
+        display: grid;
         gap: 8px;
       }
 
@@ -296,6 +398,7 @@
 
       #speakerButton {
         min-height: 36px;
+        width: 100%;
         padding: 0 14px;
         border: 1px solid rgba(255, 255, 255, 0.12);
         border-radius: 999px;
@@ -324,8 +427,12 @@
       }
 
       #micButton {
+        --mic-level: 0;
         width: 60px;
         height: 60px;
+        position: absolute;
+        right: var(--hud-right-offset);
+        bottom: 28px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -335,11 +442,40 @@
         color: #ffffff;
         cursor: pointer;
         pointer-events: auto;
+        overflow: visible;
         box-shadow: 0 10px 36px rgba(0, 0, 0, 0.35);
         transition:
           transform 120ms ease,
           border-color 120ms ease,
           background 120ms ease;
+      }
+
+      #micButton::before {
+        content: "";
+        position: absolute;
+        inset: -8px;
+        border-radius: inherit;
+        background: radial-gradient(circle, rgba(255, 186, 94, 0.24), rgba(255, 186, 94, 0));
+        opacity: calc(0.14 + var(--mic-level) * 0.52);
+        transform: scale(calc(0.92 + var(--mic-level) * 0.28));
+        transition:
+          transform 70ms linear,
+          opacity 70ms linear,
+          background 140ms ease;
+      }
+
+      #micButton::after {
+        content: "";
+        position: absolute;
+        inset: -2px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: inherit;
+        opacity: calc(0.18 + var(--mic-level) * 0.24);
+        transform: scale(calc(1 + var(--mic-level) * 0.08));
+        transition:
+          transform 70ms linear,
+          opacity 70ms linear,
+          border-color 140ms ease;
       }
 
       #micButton:hover {
@@ -350,12 +486,19 @@
       #micButton[data-state="recording"] {
         background: rgba(160, 26, 26, 0.94);
         border-color: rgba(255, 152, 152, 0.65);
-        transform: scale(1.04);
+      }
+
+      #micButton[data-state="recording"]::before {
+        background: radial-gradient(circle, rgba(255, 110, 110, 0.32), rgba(255, 110, 110, 0));
       }
 
       #micButton[data-state="armed"] {
         background: rgba(21, 93, 79, 0.94);
         border-color: rgba(129, 237, 207, 0.46);
+      }
+
+      #micButton[data-state="armed"]::before {
+        background: radial-gradient(circle, rgba(129, 237, 207, 0.28), rgba(129, 237, 207, 0));
       }
 
       #micButton[data-state="transcribing"] {
@@ -366,6 +509,18 @@
       #micButton[data-state="playing"] {
         background: rgba(31, 60, 121, 0.94);
         border-color: rgba(145, 191, 255, 0.48);
+      }
+
+      #micButton[data-state="playing"]::before {
+        background: radial-gradient(circle, rgba(145, 191, 255, 0.28), rgba(145, 191, 255, 0));
+      }
+
+      #micButton[data-monitoring="true"]::after {
+        border-color: rgba(255, 255, 255, 0.16);
+      }
+
+      #micButton[data-listening="true"] {
+        transform: translateY(-1px) scale(calc(1 + var(--mic-level) * 0.04));
       }
 
       #micButton:disabled {
@@ -379,8 +534,36 @@
       }
 
       #micButton svg {
+        position: relative;
+        z-index: 1;
         width: 28px;
         height: 28px;
+        transform: scale(calc(1 + var(--mic-level) * 0.08));
+        transition: transform 70ms linear;
+      }
+
+      @media (max-width: 920px) {
+        #hudRail {
+          top: 10px;
+          right: 10px;
+        }
+
+        #statusDock {
+          right: 10px;
+          left: 10px;
+          bottom: 96px;
+          max-width: none;
+        }
+
+        #controlPanel,
+        #replyHistory {
+          width: min(100vw - 20px, 320px);
+        }
+
+        #micButton {
+          right: 10px;
+          bottom: 16px;
+        }
       }
     </style>
   </head>
@@ -389,38 +572,61 @@
       <div id="terminal"></div>
     </div>
     <div id="overlay">
-      <div id="panelStack">
-        <div id="replyHistory" aria-live="polite" hidden></div>
-        <div id="controlPanel">
-          <div id="status" aria-live="polite">Click mic to talk. Press Enter to stop.</div>
-          <div id="modeDetail">Click once to record. Click again or press Enter to stop.</div>
-          <div id="meter" aria-hidden="true">
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
-            <span class="meterBar"></span>
+      <div id="hudRail">
+        <div id="controlDrawer" data-open="false">
+          <div id="hudTopRow">
+            <button
+              id="replyHistoryToggle"
+              type="button"
+              aria-pressed="false"
+              aria-label="Keep recent reply playback controls visible"
+              title="Keep recent reply playback controls visible"
+            >
+              R
+            </button>
+            <button
+              id="drawerToggle"
+              type="button"
+              aria-expanded="false"
+              aria-controls="controlPanel"
+            >
+              Voice: Click
+            </button>
           </div>
-          <div id="actionRow">
-            <div id="modeSelector" aria-label="Microphone mode">
-              <button class="modeButton" data-mode="hold" type="button">Hold</button>
-              <button class="modeButton" data-mode="toggle" type="button">Click</button>
-              <button class="modeButton" data-mode="auto" type="button">Auto</button>
+          <div id="controlPanel">
+            <div id="modeDetail">Click once to record. Click again or press Enter to stop.</div>
+            <div id="meter" aria-hidden="true">
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
+              <span class="meterBar"></span>
             </div>
-            <button id="speakerButton" type="button">Test Voice</button>
+            <div id="actionRow">
+              <div id="modeSelector" aria-label="Microphone mode">
+                <button class="modeButton" data-mode="hold" type="button">Hold</button>
+                <button class="modeButton" data-mode="toggle" type="button">Click</button>
+                <button class="modeButton" data-mode="auto" type="button">Auto</button>
+              </div>
+              <button id="speakerButton" type="button">Test Voice</button>
+            </div>
           </div>
         </div>
+        <div id="replyHistory" aria-live="polite" hidden></div>
+      </div>
+      <div id="statusDock">
+        <div id="status" aria-live="polite">Click mic to talk. Press Enter to stop.</div>
       </div>
       <button id="micButton" type="button" aria-label="Hold to dictate">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">

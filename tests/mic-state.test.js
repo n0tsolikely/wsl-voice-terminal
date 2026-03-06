@@ -112,6 +112,41 @@ test('Auto transcript injection returns to armed listening instead of looking id
   assert.equal(getMicViewModel(state).buttonVisualState, 'armed')
 })
 
+test('live dictation support can be disabled at runtime', () => {
+  let state = createMicState({
+    mode: MIC_MODES.TOGGLE,
+    liveDictationSupported: true
+  })
+
+  assert.equal(getMicViewModel(state).statusText, 'Click mic to talk. Words appear as you speak. Press Enter to stop.')
+
+  state = transitionMicState(state, {
+    type: 'LIVE_DICTATION_SUPPORT_SET',
+    supported: false
+  })
+
+  assert.equal(state.liveDictationSupported, false)
+  assert.equal(getMicViewModel(state).statusText, 'Click mic to talk. Press Enter to stop.')
+})
+
+test('disabling live dictation falls auto mode back to capture', () => {
+  let state = createMicState({
+    mode: MIC_MODES.AUTO,
+    autoEnabled: true,
+    autoStrategy: AUTO_STRATEGIES.LIVE,
+    liveDictationSupported: true
+  })
+
+  state = transitionMicState(state, {
+    type: 'LIVE_DICTATION_SUPPORT_SET',
+    supported: false
+  })
+
+  assert.equal(state.liveDictationSupported, false)
+  assert.equal(state.autoStrategy, AUTO_STRATEGIES.CAPTURE)
+  assert.equal(getMicViewModel(state).usesLiveDictation, false)
+})
+
 test('state view model exposes consistent status text for busy and injected phases', () => {
   let state = createMicState({ mode: MIC_MODES.TOGGLE })
 
