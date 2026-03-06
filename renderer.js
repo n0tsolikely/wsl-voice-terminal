@@ -3,6 +3,7 @@
   const micStateApi = window.WslVoiceTerminalMicState
   const dictationApi = window.WslVoiceTerminalDictationBuffer
   const terminalElement = document.getElementById('terminal')
+  const replyHistoryElement = document.getElementById('replyHistory')
   const controlPanel = document.getElementById('controlPanel')
   const micButton = document.getElementById('micButton')
   const speakerButton = document.getElementById('speakerButton')
@@ -46,14 +47,18 @@
     normalizeDictationText,
     replaceInterimDictation
   } = dictationApi
-  const AUTO_START_THRESHOLD = 0.018
-  const AUTO_CONTINUE_THRESHOLD = 0.012
-  const AUTO_START_HOLD_MS = 120
-  const AUTO_STOP_SILENCE_MS = 1100
-  const MIN_RECORDING_MS = 350
+  const AUTO_MIN_START_THRESHOLD = 0.02
+  const AUTO_MIN_CONTINUE_THRESHOLD = 0.014
+  const AUTO_START_MARGIN = 0.008
+  const AUTO_CONTINUE_MARGIN = 0.004
+  const AUTO_START_HOLD_MS = 140
+  const AUTO_STOP_SILENCE_MS = 900
+  const AUTO_NOISE_FLOOR_ALPHA = 0.08
+  const MIN_RECORDING_MS = 320
   const PLAYBACK_COOLDOWN_MS = 450
   const LIVE_DICTATION_FALLBACK_MS = 650
   const LIVE_RESULT_GRACE_MS = 900
+  const REPLY_HISTORY_LIMIT = 6
   const STATUS_NOTICE_MS = 2600
   const BUSY_PHASES = new Set([
     MIC_PHASES.RECORDING,
@@ -93,7 +98,10 @@
   let statusOverride = null
   let statusOverrideTimer = 0
   let isPreviewRequestPending = false
+  let autoNoiseFloor = AUTO_MIN_CONTINUE_THRESHOLD * 0.5
+  let activeReplyPlaybackId = ''
   const playbackQueue = []
+  const replyMessages = []
   let isPlayingAudio = false
 
   terminal.loadAddon(fitAddon)
@@ -148,7 +156,12 @@
     setStatus(payload.message, 'error')
   })
 
+  api.onSpeechFinalized((payload) => {
+    registerReplyMessage(payload)
+  })
+
   api.onSpeechAudio((payload) => {
+    registerReplyAudio(payload)
     enqueueSpeech(payload)
   })
 
@@ -375,7 +388,9 @@
         'stop',
         async () => {
           const mimeType = recorder.mimeType || 'audio/webm'
+          const captureSource = currentCapture?.source || source
           const shouldResumeAuto = Boolean(currentCapture?.keepAutoArmed) && isAutoArmed()
+          const shouldAutoSubmit = shouldResumeAuto && captureSource === MIC_MODES.AUTO
           const pointerId = activePointerId
 
           currentCapture = null
@@ -422,12 +437,21 @@
             }
 
             api.writeToPty(injectedText)
+
+            if (shouldAutoSubmit) {
+              api.writeToPty('\r')
+            }
+
             transitionMic({
               type: 'TRANSCRIPTION_INJECTED'
             })
 
             if (shouldResumeAuto) {
-              setStatus('Transcript injected. Auto listening stays on.')
+              setStatus(
+                shouldAutoSubmit
+                  ? 'Transcript sent. Auto listening stays on.'
+                  : 'Transcript injected. Auto listening stays on.'
+              )
             }
 
             focusTerminal()
@@ -495,6 +519,10 @@
   }
 
   function enqueueSpeech(payload) {
+    if (!payload?.audioBase64) {
+      return
+    }
+
     playbackQueue.push(payload)
 
     if (!isPlayingAudio) {
@@ -517,6 +545,10 @@
     }
 
     const payload = playbackQueue.shift()
+
+    activeReplyPlaybackId = payload.id || ''
+    renderReplyHistory()
+
     const bytes = base64ToUint8Array(payload.audioBase64)
     const blob = new Blob([bytes], { type: payload.mimeType || 'audio/mpeg' })
     const objectUrl = URL.createObjectURL(blob)
@@ -530,6 +562,8 @@
 
       finished = true
       URL.revokeObjectURL(objectUrl)
+      activeReplyPlaybackId = ''
+      renderReplyHistory()
 
       if (errorMessage) {
         setStatus(errorMessage, 'error')
@@ -660,7 +694,7 @@
       button.dataset.supported = String(!isAutoButton || supportsAutoMode())
       button.title =
         isAutoButton && !supportsAutoMode()
-          ? 'Auto mode needs live dictation or audio monitoring in this runtime.'
+          ? 'Auto mode needs microphone capture and audio monitoring in this runtime.'
           : ''
     })
 
@@ -679,9 +713,10 @@
     meterElement.dataset.active = String(Boolean(analyser && viewModel.shouldShowMeter))
     modeDetailElement.textContent = modeDetail
     modeDetailElement.dataset.tone =
-      micState.mode === MIC_MODES.AUTO && !runtimeSupport.liveDictation ? 'muted' : 'default'
+      micState.mode === MIC_MODES.AUTO && !supportsAutoMode() ? 'muted' : 'default'
 
     renderStatus()
+    renderReplyHistory()
   }
 
   function renderStatus() {
@@ -720,15 +755,7 @@
     }
 
     if (micState.mode === MIC_MODES.AUTO && !supportsAutoMode()) {
-      return 'Always-on listening is unavailable because this runtime has neither live dictation nor audio monitoring.'
-    }
-
-    if (
-      micState.mode === MIC_MODES.AUTO &&
-      micState.autoStrategy === AUTO_STRATEGIES.LIVE &&
-      !runtimeSupport.meter
-    ) {
-      return 'Always listening is armed with live dictation only. Audio-level fallback is unavailable here.'
+      return 'Always-on listening is unavailable because this runtime cannot monitor mic audio.'
     }
 
     return viewModel.modeDescription
@@ -784,16 +811,8 @@
     })
     transitionMic({
       type: 'AUTO_STRATEGY_SET',
-      strategy: runtimeSupport.liveDictation ? AUTO_STRATEGIES.LIVE : AUTO_STRATEGIES.CAPTURE
+      strategy: AUTO_STRATEGIES.CAPTURE
     })
-
-    if (shouldUseLiveDictation()) {
-      try {
-        await startLiveDictation()
-      } catch (_error) {
-        switchAutoModeToCapture('Live dictation did not start. Using auto capture fallback.')
-      }
-    }
   }
 
   function disableAutoListening() {
@@ -916,6 +935,7 @@
     }
 
     const now = performance.now()
+    const { startThreshold, continueThreshold } = getAutoGateThresholds()
 
     if (shouldUseLiveDictation()) {
       maybeFallbackFromLiveDictation(level, now)
@@ -931,8 +951,12 @@
       return
     }
 
+    if (!isRecording()) {
+      updateAutoNoiseFloor(level)
+    }
+
     if (isRecording()) {
-      if (level >= AUTO_CONTINUE_THRESHOLD) {
+      if (level >= continueThreshold) {
         lastVoiceAt = now
       }
 
@@ -955,7 +979,7 @@
       return
     }
 
-    if (level >= AUTO_START_THRESHOLD) {
+    if (level >= startThreshold) {
       if (!voiceCandidateSince) {
         voiceCandidateSince = now
       }
@@ -976,12 +1000,27 @@
     voiceCandidateSince = 0
   }
 
+  function updateAutoNoiseFloor(level) {
+    autoNoiseFloor =
+      autoNoiseFloor * (1 - AUTO_NOISE_FLOOR_ALPHA) + level * AUTO_NOISE_FLOOR_ALPHA
+  }
+
+  function getAutoGateThresholds() {
+    return {
+      startThreshold: Math.max(AUTO_MIN_START_THRESHOLD, autoNoiseFloor + AUTO_START_MARGIN),
+      continueThreshold: Math.max(
+        AUTO_MIN_CONTINUE_THRESHOLD,
+        autoNoiseFloor + AUTO_CONTINUE_MARGIN
+      )
+    }
+  }
+
   function isRecording() {
     return Boolean(mediaRecorder && mediaRecorder.state === 'recording')
   }
 
   function supportsAutoMode() {
-    return runtimeSupport.capture && (runtimeSupport.liveDictation || runtimeSupport.meter)
+    return runtimeSupport.capture && runtimeSupport.meter
   }
 
   function supportsAutoCapture() {
@@ -1182,7 +1221,7 @@
       return
     }
 
-    if (level < AUTO_START_THRESHOLD) {
+    if (level < getAutoGateThresholds().startThreshold) {
       liveFallbackVoiceSince = 0
       return
     }
@@ -1257,6 +1296,7 @@
     lastVoiceAt = 0
     liveFallbackVoiceSince = 0
     lastLiveResultAt = 0
+    autoNoiseFloor = AUTO_MIN_CONTINUE_THRESHOLD * 0.5
   }
 
   function isAutoArmed() {
@@ -1330,6 +1370,143 @@
     }
 
     return bytes
+  }
+
+  function registerReplyMessage(payload) {
+    const text = String(payload?.text || '').trim()
+
+    if (!text) {
+      return
+    }
+
+    const id = String(payload?.id || `reply-${Date.now()}-${replyMessages.length}`)
+    const existing = replyMessages.find((message) => message.id === id)
+
+    if (existing) {
+      existing.text = text
+    } else {
+      replyMessages.unshift({
+        id,
+        text,
+        audioBase64: '',
+        mimeType: '',
+        provider: '',
+        isLoadingAudio: false
+      })
+    }
+
+    trimReplyHistory()
+    renderReplyHistory()
+  }
+
+  function registerReplyAudio(payload) {
+    const text = String(payload?.text || '').trim()
+
+    if (!text) {
+      return
+    }
+
+    const id = String(payload?.id || `reply-${Date.now()}-${replyMessages.length}`)
+    let message = replyMessages.find((entry) => entry.id === id)
+
+    if (!message) {
+      registerReplyMessage({ id, text })
+      message = replyMessages.find((entry) => entry.id === id)
+    }
+
+    if (!message) {
+      return
+    }
+
+    message.text = text
+    message.audioBase64 = payload.audioBase64 || message.audioBase64
+    message.mimeType = payload.mimeType || message.mimeType || 'audio/mpeg'
+    message.provider = payload.provider || message.provider
+    renderReplyHistory()
+  }
+
+  function trimReplyHistory() {
+    if (replyMessages.length > REPLY_HISTORY_LIMIT) {
+      replyMessages.length = REPLY_HISTORY_LIMIT
+    }
+  }
+
+  function renderReplyHistory() {
+    if (!replyHistoryElement) {
+      return
+    }
+
+    replyHistoryElement.hidden = replyMessages.length === 0
+    replyHistoryElement.replaceChildren()
+
+    for (const message of replyMessages) {
+      const item = document.createElement('div')
+      item.className = 'replyItem'
+
+      const text = document.createElement('div')
+      text.className = 'replyText'
+      text.textContent = message.text
+
+      const button = document.createElement('button')
+      button.className = 'replySpeakButton'
+      button.type = 'button'
+      button.disabled = message.isLoadingAudio
+      button.dataset.active = String(activeReplyPlaybackId === message.id)
+      button.setAttribute('aria-label', `Play reply: ${message.text.slice(0, 80)}`)
+      button.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 10.5V13.5H8.5L13 18V6L8.5 10.5H5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M16 9C17.333 10.167 18 11.5 18 13C18 14.5 17.333 15.833 16 17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>'
+      button.addEventListener('click', () => {
+        playReplyMessage(message.id).catch((error) => {
+          setStatus(error.message, 'error')
+        })
+      })
+
+      item.append(text, button)
+      replyHistoryElement.append(item)
+    }
+  }
+
+  async function playReplyMessage(messageId) {
+    const message = replyMessages.find((entry) => entry.id === messageId)
+
+    if (!message || message.isLoadingAudio) {
+      return
+    }
+
+    try {
+      message.isLoadingAudio = !message.audioBase64
+      renderReplyHistory()
+
+      if (!message.audioBase64) {
+        const payload = await api.previewSpeech({
+          text: message.text
+        })
+
+        if (!payload.audioBase64) {
+          throw new Error('The reply TTS returned no audio.')
+        }
+
+        registerReplyAudio({
+          id: message.id,
+          text: message.text,
+          audioBase64: payload.audioBase64,
+          mimeType: payload.mimeType,
+          provider: payload.provider
+        })
+      }
+
+      enqueueSpeech({
+        id: message.id,
+        text: message.text,
+        audioBase64: message.audioBase64,
+        mimeType: message.mimeType || 'audio/mpeg',
+        provider: message.provider || ''
+      })
+    } finally {
+      message.isLoadingAudio = false
+      renderReplyHistory()
+      focusTerminal()
+    }
   }
 
   function debounce(fn, delay) {

@@ -43,3 +43,25 @@ test('falls back to local TTS when no OpenAI key exists', async () => {
   assert.equal(result.mimeType, 'audio/wav')
   assert.equal(result.audioBuffer.toString(), 'wav')
 })
+
+test('falls back to local TTS on OpenAI network failure when provider is auto', async () => {
+  const service = new TtsService({
+    requestedProvider: TTS_PROVIDERS.AUTO,
+    openAiAudioClient: {
+      hasApiKey: () => true,
+      synthesizeSpeech: async () => {
+        throw new Error('fetch failed')
+      }
+    },
+    localTtsClient: {
+      isAvailable: () => true,
+      synthesizeSpeech: async () => Buffer.from('wav')
+    }
+  })
+
+  const result = await service.synthesizeSpeech('hello')
+
+  assert.equal(result.provider, TTS_PROVIDERS.LOCAL)
+  assert.equal(result.mimeType, 'audio/wav')
+  assert.equal(result.audioBuffer.toString(), 'wav')
+})

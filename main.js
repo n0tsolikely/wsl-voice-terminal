@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, session } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const pty = require('node-pty')
@@ -82,6 +82,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  configureMediaPermissions(session.defaultSession)
+
   ipcMain.handle('pty:start', async (_event, dimensions) => {
     terminalSession?.start(dimensions)
     return { ok: true }
@@ -130,6 +132,48 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
+
+function configureMediaPermissions(electronSession) {
+  if (!electronSession) {
+    return
+  }
+
+  if (typeof electronSession.setDevicePermissionHandler === 'function') {
+    electronSession.setDevicePermissionHandler((details) => {
+      return details.deviceType === 'audioCapture'
+    })
+  }
+
+  electronSession.setPermissionCheckHandler((_webContents, permission, _origin, details = {}) => {
+    if (isAudioMediaPermission(permission, details)) {
+      return true
+    }
+
+    return false
+  })
+
+  electronSession.setPermissionRequestHandler(
+    (_webContents, permission, callback, details = {}) => {
+      callback(isAudioMediaPermission(permission, details))
+    }
+  )
+}
+
+function isAudioMediaPermission(permission, details = {}) {
+  if (permission === 'audioCapture') {
+    return true
+  }
+
+  if (permission !== 'media') {
+    return false
+  }
+
+  if (Array.isArray(details.mediaTypes)) {
+    return details.mediaTypes.includes('audio')
+  }
+
+  return details.mediaType === 'audio'
+}
 
 function loadDotEnv(dotEnvPath) {
   if (!fs.existsSync(dotEnvPath)) {

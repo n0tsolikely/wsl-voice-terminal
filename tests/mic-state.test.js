@@ -73,7 +73,10 @@ test('Auto mode arm and disarm transitions stay explicit', () => {
   state = transitionMicState(state, { type: 'AUTO_ARM' })
   assert.equal(state.autoEnabled, true)
   assert.equal(state.phase, MIC_PHASES.ARMED)
-  assert.equal(getMicViewModel(state).statusText, 'Auto listening is on. Speak and text should appear as you talk.')
+  assert.equal(
+    getMicViewModel(state).statusText,
+    'Auto listening is on. Speak, pause, and it will send automatically.'
+  )
 
   state = transitionMicState(state, {
     type: 'RECORDING_STARTED',

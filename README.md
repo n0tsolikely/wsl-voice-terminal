@@ -12,9 +12,9 @@ An Electron wrapper around `wsl.exe` with a real terminal, local mic controls, a
 
 ## Speech
 
-- If `OPENAI_API_KEY` exists, transcription uses OpenAI and reply TTS defaults to OpenAI.
+- If `OPENAI_API_KEY` exists, transcription uses OpenAI and reply TTS prefers OpenAI.
 - If `OPENAI_API_KEY` is empty, transcription falls back to local `faster-whisper` and installs itself on first use.
-- Reply TTS can also fall back to local Windows speech synthesis when `TTS_PROVIDER=auto` or `TTS_PROVIDER=local`.
+- Reply TTS can also fall back to local Windows speech when `TTS_PROVIDER=auto` and OpenAI TTS is unavailable, or when `TTS_PROVIDER=local`.
 - Local fallback defaults to `base.en` on `cpu` with `int8` compute for Windows reliability. You can override that in `.env`.
 - Local TTS uses Windows PowerShell and `System.Speech`, so it is Windows-only.
 
