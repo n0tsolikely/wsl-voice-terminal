@@ -150,7 +150,8 @@
         content: "-";
       }
 
-      #replyHistoryToggle {
+      #replyHistoryToggle,
+      #speechToggleButton {
         width: 34px;
         height: 34px;
         display: inline-flex;
@@ -173,7 +174,8 @@
           color 140ms ease;
       }
 
-      #replyHistoryToggle:hover {
+      #replyHistoryToggle:hover,
+      #speechToggleButton:hover {
         transform: translateY(-1px);
         border-color: rgba(255, 255, 255, 0.28);
       }
@@ -182,6 +184,21 @@
         border-color: rgba(181, 199, 255, 0.42);
         background: rgba(91, 124, 255, 0.2);
         color: #dbe5ff;
+      }
+
+      #speechToggleButton[data-active="true"] {
+        border-color: rgba(181, 199, 255, 0.42);
+        background: rgba(91, 124, 255, 0.2);
+        color: #dbe5ff;
+      }
+
+      #speechToggleButton[data-active="false"] {
+        color: rgba(255, 255, 255, 0.56);
+      }
+
+      #speechToggleButton svg {
+        width: 15px;
+        height: 15px;
       }
 
       #replyHistory {
@@ -583,6 +600,29 @@
               title="Keep recent reply playback controls visible"
             >
               R
+            </button>
+            <button
+              id="speechToggleButton"
+              type="button"
+              aria-pressed="true"
+              aria-label="Turn off spoken assistant replies"
+              title="Turn off spoken assistant replies"
+              data-active="true"
+            >
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M5 10.5V13.5H8.5L13 18V6L8.5 10.5H5Z"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linejoin="round"
+                />
+                <path
+                  d="M16 9C17.333 10.167 18 11.5 18 13C18 14.5 17.333 15.833 16 17"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linecap="round"
+                />
+              </svg>
             </button>
             <button
               id="drawerToggle"

@@ -85,6 +85,21 @@ test('extractSpeechText ignores Codex progress chrome and command tree lines', (
   assert.equal(output, 'I fixed the clipboard shortcuts and compacted the voice drawer.')
 })
 
+test('extractSpeechText strips decorative bullet markers from real reply text', () => {
+  const input = [
+    '• Here and ready. If you want, I can inspect code, fix something, review a change, or just answer a question.',
+    '',
+    '› Write tests for @filename'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Here and ready. If you want, I can inspect code, fix something, review a change, or just answer a question.'
+  )
+})
+
 test('extractSpeechText ignores pending-steer and Codex footer lines', () => {
   const input = [
     '! pending steer: Ask for more tests.',

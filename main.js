@@ -203,6 +203,20 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.handle('speech:set-enabled', async (_event, enabled) => {
+    const normalizedEnabled = Boolean(enabled)
+
+    terminalSession?.setAutoReplySpeechEnabled(normalizedEnabled)
+    runtimeLogger.log('speech.auto_reply_toggled', {
+      enabled: normalizedEnabled
+    })
+
+    return {
+      ok: true,
+      enabled: normalizedEnabled
+    }
+  })
+
   createWindow()
 
   app.on('activate', () => {

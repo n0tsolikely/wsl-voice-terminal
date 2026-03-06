@@ -75,7 +75,7 @@ test('Auto mode arm and disarm transitions stay explicit', () => {
   assert.equal(state.phase, MIC_PHASES.ARMED)
   assert.equal(
     getMicViewModel(state).statusText,
-    'Auto listening is on. Speak, pause, and it will send automatically.'
+    'Auto listening is on. Speak, pause, and it will inject text into the prompt.'
   )
 
   state = transitionMicState(state, {
@@ -145,6 +145,10 @@ test('disabling live dictation falls auto mode back to capture', () => {
   assert.equal(state.liveDictationSupported, false)
   assert.equal(state.autoStrategy, AUTO_STRATEGIES.CAPTURE)
   assert.equal(getMicViewModel(state).usesLiveDictation, false)
+  assert.equal(
+    getMicViewModel(state).modeDescription,
+    'Always listening is armed. Speak, pause, and it will transcribe into the prompt.'
+  )
 })
 
 test('state view model exposes consistent status text for busy and injected phases', () => {

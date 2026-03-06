@@ -98,3 +98,34 @@ test('sends a status notice when OpenAI TTS falls back to local voice', async ()
   assert.equal(sent[2].channel, 'speech:audio')
   assert.equal(sent[2].payload.id, sent[0].payload.id)
 })
+
+test('still emits finalized text but skips TTS audio when auto reply speech is disabled', async () => {
+  const sent = []
+  let synthesisCalls = 0
+  const relay = new SpeechRelay({
+    ttsService: {
+      synthesizeSpeech: async () => {
+        synthesisCalls += 1
+        return {
+          audioBuffer: Buffer.from('voice-bytes'),
+          mimeType: 'audio/mpeg',
+          provider: 'fake'
+        }
+      }
+    },
+    send: (channel, payload) => {
+      sent.push({ channel, payload })
+    }
+  })
+
+  relay.setAutoReplySpeechEnabled(false)
+  relay.observeInput('codex exec "hi"\r')
+  relay.observeOutput('This is the final answer.\nuser@host:~/repo$ ')
+  await relay.flush()
+  relay.dispose()
+
+  assert.equal(synthesisCalls, 0)
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].channel, 'speech:finalized')
+  assert.equal(sent[0].payload.text, 'This is the final answer.')
+})

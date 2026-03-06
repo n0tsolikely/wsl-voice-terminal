@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('terminalAPI', {
   resizePty: (dimensions) => ipcRenderer.send('pty:resize', dimensions),
   transcribeAudio: (payload) => ipcRenderer.invoke('stt:transcribe', payload),
   previewSpeech: (payload) => ipcRenderer.invoke('speech:preview', payload),
+  setAutoReplySpeechEnabled: (enabled) => ipcRenderer.invoke('speech:set-enabled', enabled),
   readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
   writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
   logRuntimeEvent: (payload) => ipcRenderer.send('runtime:log', payload),

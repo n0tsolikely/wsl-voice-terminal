@@ -8,6 +8,7 @@
   const controlDrawer = document.getElementById('controlDrawer')
   const drawerToggleButton = document.getElementById('drawerToggle')
   const replyHistoryToggleButton = document.getElementById('replyHistoryToggle')
+  const speechToggleButton = document.getElementById('speechToggleButton')
   const micButton = document.getElementById('micButton')
   const speakerButton = document.getElementById('speakerButton')
   const statusElement = document.getElementById('status')
@@ -66,6 +67,7 @@
   const REPLY_HISTORY_LIMIT = 6
   const REPLY_HISTORY_AUTO_HIDE_MS = 15000
   const STATUS_NOTICE_MS = 2600
+  const AUTO_REPLY_SPEECH_STORAGE_KEY = 'wsl-voice-terminal.auto-reply-speech-enabled'
   const BUSY_PHASES = new Set([
     MIC_PHASES.RECORDING,
     MIC_PHASES.STOPPING,
@@ -107,6 +109,8 @@
   let isPreviewRequestPending = false
   let autoNoiseFloor = AUTO_MIN_CONTINUE_THRESHOLD * 0.5
   let activeReplyPlaybackId = ''
+  let currentPlaybackHandle = null
+  let isAutoReplySpeechEnabled = readStoredBoolean(AUTO_REPLY_SPEECH_STORAGE_KEY, true)
   const playbackQueue = []
   const replyMessages = []
   let isPlayingAudio = false
@@ -185,7 +189,10 @@
 
   api.onSpeechAudio((payload) => {
     registerReplyAudio(payload)
-    enqueueSpeech(payload)
+
+    if (isAutoReplySpeechEnabled) {
+      enqueueSpeech(payload)
+    }
   })
 
   api.onStatus((payload) => {
@@ -217,18 +224,48 @@
     }
   })
   replyHistoryToggleButton?.addEventListener('click', () => {
-    isReplyHistoryPinned = !isReplyHistoryPinned
+    if (!replyMessages.length) {
+      focusTerminal()
+      return
+    }
 
-    if (isReplyHistoryPinned) {
+    if (shouldShowReplyHistory()) {
+      isReplyHistoryPinned = false
+      isReplyHistoryVisible = false
       clearReplyHistoryHideTimer()
-      isReplyHistoryVisible = replyMessages.length > 0
-    } else if (replyMessages.length > 0) {
+    } else {
+      isReplyHistoryPinned = true
       isReplyHistoryVisible = true
-      scheduleReplyHistoryHide()
+      clearReplyHistoryHideTimer()
     }
 
     renderReplyHistory()
     focusTerminal()
+  })
+
+  speechToggleButton?.addEventListener('click', () => {
+    const nextEnabled = !isAutoReplySpeechEnabled
+
+    applyAutoReplySpeechEnabled(nextEnabled, {
+      persist: true,
+      stopPlayback: !nextEnabled
+    })
+      .then(() => {
+        setStatus(
+          nextEnabled ? 'Assistant reply readback is on.' : 'Assistant reply readback is off.',
+          'default',
+          {
+            durationMs: 2200,
+            persistDuringBusy: true
+          }
+        )
+      })
+      .catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      .finally(() => {
+        focusTerminal()
+      })
   })
 
   modeButtons.forEach((button) => {
@@ -436,7 +473,6 @@
           const mimeType = recorder.mimeType || 'audio/webm'
           const captureSource = currentCapture?.source || source
           const shouldResumeAuto = Boolean(currentCapture?.keepAutoArmed) && isAutoArmed()
-          const shouldAutoSubmit = shouldResumeAuto && captureSource === MIC_MODES.AUTO
           const pointerId = activePointerId
 
           currentCapture = null
@@ -499,13 +535,9 @@
             }
 
             if (captureSource === MIC_MODES.AUTO) {
-              api.writeToPty(injectedText)
+              appendCommittedDictationText(injectedText)
             } else {
               finalizeBufferedDictationText(injectedText)
-            }
-
-            if (shouldAutoSubmit) {
-              api.writeToPty('\r')
             }
 
             transitionMic({
@@ -513,11 +545,7 @@
             })
 
             if (shouldResumeAuto) {
-              setStatus(
-                shouldAutoSubmit
-                  ? 'Transcript sent. Auto listening stays on.'
-                  : 'Transcript injected. Auto listening stays on.'
-              )
+              setStatus('Transcript injected. Auto listening stays on. Press Enter to run.')
             }
 
             focusTerminal()
@@ -659,6 +687,9 @@
 
       finished = true
       URL.revokeObjectURL(objectUrl)
+      if (currentPlaybackHandle?.audio === audio) {
+        currentPlaybackHandle = null
+      }
       activeReplyPlaybackId = ''
       if (!isReplyHistoryPinned) {
         scheduleReplyHistoryHide()
@@ -674,6 +705,11 @@
       }
 
       playNextSpeech()
+    }
+
+    currentPlaybackHandle = {
+      audio,
+      finalize
     }
 
     audio.addEventListener(
@@ -698,6 +734,28 @@
     } catch (error) {
       finalize(error.message)
     }
+  }
+
+  function stopSpeechPlayback({ clearQueue = true } = {}) {
+    if (clearQueue) {
+      playbackQueue.length = 0
+    }
+
+    if (!currentPlaybackHandle) {
+      if (!playbackQueue.length) {
+        isPlayingAudio = false
+      }
+      return
+    }
+
+    try {
+      currentPlaybackHandle.audio.pause()
+      currentPlaybackHandle.audio.currentTime = 0
+    } catch (_error) {
+      // The audio element may already be tearing down.
+    }
+
+    currentPlaybackHandle.finalize()
   }
 
   function setStatus(message, tone = 'default', options = {}) {
@@ -785,6 +843,11 @@
       setStatus('Microphone capture is not available in this Electron runtime.', 'error')
     }
 
+    applyAutoReplySpeechEnabled(isAutoReplySpeechEnabled, {
+      persist: false,
+      stopPlayback: false
+    }).catch(() => {})
+
     setControlDrawerOpen(false)
     renderUi()
     renderMeterIdle()
@@ -822,6 +885,19 @@
     })
 
     speakerButton.disabled = isPreviewRequestPending
+    if (speechToggleButton) {
+      speechToggleButton.dataset.active = String(isAutoReplySpeechEnabled)
+      speechToggleButton.setAttribute('aria-pressed', String(isAutoReplySpeechEnabled))
+      speechToggleButton.setAttribute(
+        'aria-label',
+        isAutoReplySpeechEnabled
+          ? 'Turn off spoken assistant replies'
+          : 'Turn on spoken assistant replies'
+      )
+      speechToggleButton.title = isAutoReplySpeechEnabled
+        ? 'Turn off spoken assistant replies'
+        : 'Turn on spoken assistant replies'
+    }
     micButton.disabled = micDisabled
     micButton.dataset.state = viewModel.buttonVisualState
     micButton.dataset.monitoring = String(Boolean(analyser && viewModel.shouldShowMeter))
@@ -1766,16 +1842,14 @@
     }
 
     commitVisibleInterimDictation()
-    api.writeToPty('\r')
-    dictationBuffer = createDictationBuffer()
     voiceCandidateSince = 0
     lastVoiceAt = 0
     liveFallbackVoiceSince = 0
     lastLiveResultAt = 0
-    logRuntime('dictation.live_auto_sent', {
+    logRuntime('dictation.live_auto_injected', {
       text
     })
-    setStatus('Transcript sent. Auto listening stays on.', 'default', {
+    setStatus('Transcript injected. Auto listening stays on. Press Enter to run.', 'default', {
       durationMs: 2200,
       persistDuringBusy: true
     })
@@ -1892,6 +1966,13 @@
 
   function getVisibleDictationText() {
     return `${dictationBuffer.committedText}${getRenderedInterimText(dictationBuffer)}`
+  }
+
+  function appendCommittedDictationText(text) {
+    const appended = appendCommittedDictation(dictationBuffer, text)
+
+    dictationBuffer = appended.buffer
+    writeAppTextToPty(appended.insertText)
   }
 
   function clearBufferedDictationText() {
@@ -2078,8 +2159,15 @@
 
     replyHistoryElement.hidden = replyMessages.length === 0
     replyHistoryElement.dataset.visible = String(shouldShow)
-    replyHistoryToggleButton.dataset.active = String(isReplyHistoryPinned || shouldShow)
-    replyHistoryToggleButton.setAttribute('aria-pressed', String(isReplyHistoryPinned))
+    replyHistoryToggleButton.dataset.active = String(shouldShow)
+    replyHistoryToggleButton.setAttribute('aria-pressed', String(shouldShow))
+    replyHistoryToggleButton.setAttribute(
+      'aria-label',
+      shouldShow ? 'Hide recent reply playback controls' : 'Show recent reply playback controls'
+    )
+    replyHistoryToggleButton.title = shouldShow
+      ? 'Hide recent reply playback controls'
+      : 'Show recent reply playback controls'
     replyHistoryElement.replaceChildren()
 
     for (const message of replyMessages) {
@@ -2164,7 +2252,7 @@
 
     isReplyHistoryVisible = true
 
-    if (sticky || isReplyHistoryPinned || activeReplyPlaybackId) {
+    if (sticky || isReplyHistoryPinned) {
       clearReplyHistoryHideTimer()
       return
     }
@@ -2175,7 +2263,7 @@
   function scheduleReplyHistoryHide() {
     clearReplyHistoryHideTimer()
 
-    if (isReplyHistoryPinned || activeReplyPlaybackId || !replyMessages.length) {
+    if (isReplyHistoryPinned || !replyMessages.length) {
       return
     }
 
@@ -2195,7 +2283,61 @@
   }
 
   function shouldShowReplyHistory() {
-    return Boolean(replyMessages.length && (isReplyHistoryVisible || isReplyHistoryPinned || activeReplyPlaybackId))
+    return Boolean(replyMessages.length && (isReplyHistoryVisible || isReplyHistoryPinned))
+  }
+
+  async function applyAutoReplySpeechEnabled(
+    enabled,
+    { persist = true, stopPlayback = false } = {}
+  ) {
+    isAutoReplySpeechEnabled = Boolean(enabled)
+
+    if (persist) {
+      writeStoredBoolean(AUTO_REPLY_SPEECH_STORAGE_KEY, isAutoReplySpeechEnabled)
+    }
+
+    if (stopPlayback && !isAutoReplySpeechEnabled) {
+      stopSpeechPlayback({
+        clearQueue: true
+      })
+    }
+
+    renderUi()
+
+    if (!api.setAutoReplySpeechEnabled) {
+      return
+    }
+
+    await api.setAutoReplySpeechEnabled(isAutoReplySpeechEnabled)
+    logRuntime('speech.auto_reply_toggled', {
+      enabled: isAutoReplySpeechEnabled
+    })
+  }
+
+  function readStoredBoolean(key, fallbackValue) {
+    try {
+      const rawValue = window.localStorage?.getItem(key)
+
+      if (rawValue === 'true') {
+        return true
+      }
+
+      if (rawValue === 'false') {
+        return false
+      }
+    } catch (_error) {
+      // Ignore storage failures and use the current session default.
+    }
+
+    return fallbackValue
+  }
+
+  function writeStoredBoolean(key, value) {
+    try {
+      window.localStorage?.setItem(key, value ? 'true' : 'false')
+    } catch (_error) {
+      // Ignore storage failures and keep the current session value.
+    }
   }
 
   function debounce(fn, delay) {
