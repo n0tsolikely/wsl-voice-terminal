@@ -4,6 +4,8 @@ Just WSL with a mic.
 
 An Electron wrapper around `wsl.exe` with a real terminal, local mic controls, and spoken responses.
 
+Created by Peter J. Reynolds (`notsolikely` / GitHub: `n0tsolikely`), building under Synapse Guild.
+
 ## Modes
 
 - `Hold`: press and hold the mic button to record

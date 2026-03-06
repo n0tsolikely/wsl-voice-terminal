@@ -2,7 +2,7 @@
   "name": "wsl-voice-terminal",
   "version": "0.1.0",
   "private": true,
-  "author": "Peter J. Reynolds - (Notsolikely)",
+  "author": "Peter J. Reynolds (notsolikely)",
   "license": "MIT",
   "description": "Electron terminal wrapper for WSL with press-to-talk input and Codex-focused TTS output.",
   "main": "main.js",
