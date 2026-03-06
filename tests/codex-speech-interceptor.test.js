@@ -157,6 +157,24 @@ test('finalizes a continued Codex reply when the footer redraw is glued to the f
   ])
 })
 
+test('finalizes a Codex reply when the prompt redraw happens before a trailing follow-up line', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Implement {feature}\n')
+  interceptor.observeInput('i said a paragraph.. reply with two seperate liones\r')
+  interceptor.observeOutput(
+    "• I'm doing well today, staying focused and ready to help with whatever you need.\n› Implement {feature}\n  gpt-5.4 xhigh · 100% left · /mnt/c/Users/peter\n› Implement {feature}\n  gpt-5.4 xhigh · 100% left · /mnt/c/Users/peter\n  How are you doing?\n"
+  )
+
+  assert.equal(
+    interceptor.flush(),
+    "I'm doing well today, staying focused and ready to help with whatever you need. How are you doing?"
+  )
+  assert.deepEqual(emitted, [
+    "I'm doing well today, staying focused and ready to help with whatever you need. How are you doing?"
+  ])
+})
+
 test('does not emit duplicates when flushed repeatedly after completion', () => {
   const { interceptor, emitted } = createInterceptor()
 
