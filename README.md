@@ -22,7 +22,8 @@ Created by Peter J. Reynolds (`notsolikely` / GitHub: `n0tsolikely`), building u
 
 ## Install (Recommended)
 
-Saved-script install is the default recommendation. It is more transparent and less likely to trip antivirus heuristics than piping a remote script directly into PowerShell.
+Saved-script install is the default recommendation.  
+It is more transparent and less likely to trip antivirus heuristics than piping a remote script directly into PowerShell.
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/n0tsolikely/wsl-voice-terminal/main/install.ps1 -OutFile .\install.ps1
