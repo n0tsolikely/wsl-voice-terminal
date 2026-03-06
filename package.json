@@ -7,6 +7,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "test": "node --test",
     "postinstall": "electron-rebuild -f -w node-pty",
     "rebuild:native": "electron-rebuild -f -w node-pty"
   },

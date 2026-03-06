@@ -5,6 +5,11 @@ const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
 const pty = require('node-pty')
+const {
+  extractSpeechText,
+  getLastNonEmptyLine,
+  normalizeTerminalText
+} = require('./lib/terminal-speech')
 
 loadDotEnv(path.join(__dirname, '.env'))
 
@@ -18,8 +23,6 @@ const LOCAL_WHISPER_DEVICE = process.env.LOCAL_WHISPER_DEVICE || 'cpu'
 const LOCAL_WHISPER_COMPUTE_TYPE = process.env.LOCAL_WHISPER_COMPUTE_TYPE || 'int8'
 const LOCAL_WHISPER_LANGUAGE = process.env.LOCAL_WHISPER_LANGUAGE || 'en'
 const MAX_TTS_CHARS = 4000
-const ANSI_PATTERN =
-  /[\u001B\u009B][[\]()#;?]*(?:(?:\d{1,4}(?:;\d{0,4})*)?[0-9A-PR-TZcf-ntqry=><~]|(?:].*?(?:\u0007|\u001B\\)))/g
 
 class OpenAIClient {
   hasApiKey() {
@@ -656,141 +659,6 @@ function splitArgs(rawArgs) {
 
   const matches = rawArgs.match(/(?:[^\s"]+|"[^"]*")+/g) || []
   return matches.map((entry) => entry.replace(/^"(.*)"$/, '$1'))
-}
-
-function normalizeTerminalText(text, { trimEdges = true } = {}) {
-  const withoutAnsi = text.replace(ANSI_PATTERN, '')
-  let withoutBackspaces = ''
-
-  for (const char of withoutAnsi) {
-    if (char === '\b' || char === '\u007f') {
-      withoutBackspaces = withoutBackspaces.slice(0, -1)
-      continue
-    }
-
-    withoutBackspaces += char
-  }
-
-  const normalized = withoutBackspaces
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-
-  return trimEdges ? normalized.trim() : normalized
-}
-
-function stripCodeBlocks(text) {
-  return text.replace(/```[\s\S]*?```/g, '').replace(/\n{3,}/g, '\n\n')
-}
-
-function extractSpeechText(text) {
-  const paragraphs = stripCodeBlocks(text)
-    .split(/\n{2,}/)
-    .map((paragraph) => {
-      const cleanedLines = paragraph
-        .split('\n')
-        .map((line) => sanitizeSpeechLine(line))
-        .filter(Boolean)
-
-      return cleanedLines.join(' ').replace(/\s{2,}/g, ' ').trim()
-    })
-    .filter(Boolean)
-  const candidates = paragraphs.filter((paragraph) => scoreSpeechParagraph(paragraph) >= 4)
-
-  if (!candidates.length) {
-    return ''
-  }
-
-  return candidates.slice(-2).join(' ').trim()
-}
-
-function sanitizeSpeechLine(line) {
-  const trimmed = line.trim()
-
-  if (!trimmed || shouldIgnoreSpeechLine(trimmed)) {
-    return ''
-  }
-
-  return trimmed
-    .replace(/^[-*]\s+/, '')
-    .replace(/^\d+\.\s+/, '')
-    .replace(/\[[^\]]+\]\((?:\/|https?:\/\/)[^)]+\)/g, '')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
-}
-
-function shouldIgnoreSpeechLine(line) {
-  if (!line) {
-    return true
-  }
-
-  if (/^(?:>|>>|›|»|❯|You:|User:|Human:|Prompt:)\s*$/.test(line)) {
-    return true
-  }
-
-  if (
-    /^[^@\s]+@[^:\s]+:[^#$\n]+[$#]\s*$/.test(line) ||
-    /^PS [^>]+>\s*$/.test(line) ||
-    /^[A-Za-z]:\\.*>\s*$/.test(line)
-  ) {
-    return true
-  }
-
-  if (/^(?:Chunk ID:|Wall time:|Process exited|Output:|Success\. Updated|fatal:)/i.test(line)) {
-    return true
-  }
-
-  if (/^(?:diff --git|index [0-9a-f]+|@@ |\+\+\+ |--- )/.test(line)) {
-    return true
-  }
-
-  if (/^(?:M|A|D|R|C|\?\?)\s+\S+/.test(line)) {
-    return true
-  }
-
-  if (/^(?:\/|[A-Za-z]:\\).+/.test(line) && /[\\/]/.test(line) && !/[.!?]$/.test(line)) {
-    return true
-  }
-
-  if (/^\[[^\]]+\]\((?:\/|https?:\/\/)[^)]+\)$/.test(line)) {
-    return true
-  }
-
-  const alphaCount = (line.match(/[A-Za-z]/g) || []).length
-  const symbolCount = (line.match(/[^A-Za-z0-9\s.,!?'"-]/g) || []).length
-
-  return alphaCount < 4 || (symbolCount > alphaCount && !/[.!?]$/.test(line))
-}
-
-function scoreSpeechParagraph(paragraph) {
-  const wordCount = (paragraph.match(/[A-Za-z]{2,}/g) || []).length
-
-  if (wordCount < 4) {
-    return 0
-  }
-
-  let score = wordCount
-
-  if (/[.!?]/.test(paragraph)) {
-    score += 3
-  }
-
-  if (/[{}[\]<>]/.test(paragraph)) {
-    score -= 2
-  }
-
-  return score
-}
-
-function getLastNonEmptyLine(lines) {
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (lines[index].trim()) {
-      return lines[index]
-    }
-  }
-
-  return ''
 }
 
 function loadDotEnv(dotEnvPath) {

@@ -1,5 +1,6 @@
 (function bootstrap() {
   const api = window.terminalAPI
+  const { MIC_MODES, shouldConsumeEnterForMic } = window.WslVoiceTerminalMic
   const terminalElement = document.getElementById('terminal')
   const micButton = document.getElementById('micButton')
   const speakerButton = document.getElementById('speakerButton')
@@ -19,11 +20,6 @@
       foreground: '#f3f3f3'
     }
   })
-  const MIC_MODES = {
-    HOLD: 'hold',
-    TOGGLE: 'toggle',
-    AUTO: 'auto'
-  }
   const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition || null
   const AUTO_START_THRESHOLD = 0.04
   const AUTO_CONTINUE_THRESHOLD = 0.024
@@ -80,17 +76,30 @@
       return false
     }
 
-    if (event.type !== 'keydown' || event.key !== 'Enter') {
-      return true
-    }
-
-    if ((micMode === MIC_MODES.TOGGLE || micMode === MIC_MODES.AUTO) && isRecording()) {
+    if (
+      shouldConsumeEnterForMic({
+        eventType: event.type,
+        key: event.key,
+        micMode,
+        isRecording: isRecording(),
+        isStoppingRecording,
+        isTranscribing
+      })
+    ) {
       event.preventDefault()
       event.stopPropagation()
-      stopRecording({
-        reason: 'manual-enter',
-        keepAutoArmed: micMode === MIC_MODES.AUTO && autoListenEnabled
-      })
+
+      if (isRecording()) {
+        stopRecording({
+          reason: 'manual-enter',
+          keepAutoArmed: micMode === MIC_MODES.AUTO && autoListenEnabled
+        })
+      } else if (isTranscribing) {
+        setStatus('Transcribing...')
+      } else if (isStoppingRecording) {
+        setStatus('Finishing capture...')
+      }
+
       return false
     }
 
