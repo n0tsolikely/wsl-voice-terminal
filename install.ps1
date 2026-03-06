@@ -240,7 +240,8 @@ function New-VsInstallStatus {
     [Parameter(Mandatory = $true)]
     [pscustomobject]$Result,
     [bool]$Installed = $false,
-    [bool]$AutoInstallAttempted = $false
+    [bool]$AutoInstallAttempted = $false,
+    [bool]$InstallCommandSucceeded = $false
   )
 
   return [PSCustomObject]@{
@@ -250,6 +251,7 @@ function New-VsInstallStatus {
     VsInstalled = [bool]$Result.VsInstalled
     CoreFeaturesOnly = [bool]$Result.CoreFeaturesOnly
     AutoInstallAttempted = $AutoInstallAttempted
+    InstallCommandSucceeded = $InstallCommandSucceeded
   }
 }
 
@@ -347,6 +349,41 @@ function Get-VsToolsetMissingFailMessage {
   return 'Visual Studio Build Tools are installed, but the required VC++ toolset is still missing. Install Visual Studio Build Tools with the "Desktop development with C++" workload (or equivalent VC++ components), then rerun install.ps1.'
 }
 
+function Install-VsBuildToolsToolset([string]$WingetPath) {
+  $overrideArgs = '--passive --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --includeRecommended'
+  $arguments = @(
+    'install',
+    '--id',
+    'Microsoft.VisualStudio.2022.BuildTools',
+    '--exact',
+    '--source',
+    'winget',
+    '--accept-package-agreements',
+    '--accept-source-agreements',
+    '--override',
+    $overrideArgs
+  )
+
+  try {
+    $exitCode = Invoke-Checked -FilePath $WingetPath -Arguments $arguments -IgnoreExitCode -PassThruExitCode
+  } catch {
+    return [PSCustomObject]@{
+      Succeeded = $false
+      ExitCode = $null
+      Override = $overrideArgs
+      ErrorMessage = $_.Exception.Message
+    }
+  }
+
+  $succeeded = ($exitCode -eq 0 -or $exitCode -eq 3010)
+  return [PSCustomObject]@{
+    Succeeded = $succeeded
+    ExitCode = $exitCode
+    Override = $overrideArgs
+    ErrorMessage = $null
+  }
+}
+
 function Ensure-VsBuildTools([string]$WingetPath) {
   Write-Step 'Checking Visual Studio C++ build tools'
   try {
@@ -384,18 +421,19 @@ function Ensure-VsBuildTools([string]$WingetPath) {
   }
 
   Write-Install 'Installing Visual Studio Build Tools with winget'
-  $null = Invoke-Checked -FilePath $WingetPath -Arguments @(
-    'install',
-    '--id',
-    'Microsoft.VisualStudio.2022.BuildTools',
-    '--exact',
-    '--source',
-    'winget',
-    '--accept-package-agreements',
-    '--accept-source-agreements',
-    '--override',
-    '--passive --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --includeRecommended'
-  )
+  $installResult = Install-VsBuildToolsToolset -WingetPath $WingetPath
+  if (-not $installResult.Succeeded) {
+    Write-Host '[FAIL] Automatic Visual Studio Build Tools installation failed.' -ForegroundColor Red
+    if ($null -ne $installResult.ExitCode) {
+      Write-Host ("[FAIL] Build Tools installer exit code: {0}" -f $installResult.ExitCode) -ForegroundColor Red
+    }
+    if ($installResult.ErrorMessage) {
+      Write-Warn ("Build Tools install command error: {0}" -f $installResult.ErrorMessage)
+    }
+    Write-Warn 'Open Visual Studio Build Tools and ensure "Desktop development with C++" (or equivalent VC++ toolset components) is installed, then rerun install.ps1.'
+    return (New-VsInstallStatus -Result $vsCpp -Installed $true -AutoInstallAttempted $true -InstallCommandSucceeded $false)
+  }
+
   Write-Warn 'If prompted by the Visual Studio installer UI, keep "Desktop development with C++" selected.'
   Refresh-Path
 
@@ -414,7 +452,7 @@ function Ensure-VsBuildTools([string]$WingetPath) {
     Write-Warn 'Visual Studio C++ build tools are still not detected.'
   }
 
-  return (New-VsInstallStatus -Result $vsCpp -Installed $true -AutoInstallAttempted $true)
+  return (New-VsInstallStatus -Result $vsCpp -Installed $true -AutoInstallAttempted $true -InstallCommandSucceeded $true)
 }
 
 function Test-Git {
@@ -705,6 +743,10 @@ function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
   if ($null -eq $vsInstall -or -not $vsInstall.PSObject.Properties['Installed']) {
     $fallbackVsState = New-VsCppState -Source 'fallback'
     $vsInstall = New-VsInstallStatus -Result $fallbackVsState
+  }
+
+  if ($vsInstall.AutoInstallAttempted -and -not $vsInstall.InstallCommandSucceeded) {
+    Stop-Install 'Automatic Visual Studio Build Tools installation failed. Open Visual Studio Build Tools and ensure "Desktop development with C++" (or equivalent VC++ toolset components) is installed, then rerun install.ps1.'
   }
 
   $nodePtyRequired = Test-NodePtyDependency -RepoDir $RepoDir

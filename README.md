@@ -94,6 +94,7 @@ Future distribution should prefer a signed installer or a signed PowerShell scri
 - Install Visual Studio Build Tools or Visual Studio and include the "Desktop development with C++" workload.
 - The installer now detects missing build tools and offers to install them automatically.
 - Installing base Build Tools alone may still miss the required VC++ toolset; confirm the Desktop development with C++ workload (or equivalent VC++ components) is actually installed.
+- If automatic Build Tools installation fails, open Visual Studio Build Tools manually, install Desktop development with C++, then rerun `install.ps1`.
 - Rerun `npm install`.
 - If `npm install` still fails, run `npm run rebuild:native`.
 - Run `npm run doctor` to recheck the local setup.
