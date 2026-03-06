@@ -2,11 +2,11 @@ const { app, BrowserWindow, ipcMain } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const pty = require('node-pty')
-const { CodexSpeechInterceptor } = require('./lib/codex-speech-interceptor')
 const { LocalTtsClient } = require('./lib/local-tts-client')
 const { LocalWhisperClient } = require('./lib/local-whisper-client')
 const { OpenAiAudioClient } = require('./lib/openai-audio-client')
 const { runCommand } = require('./lib/run-command')
+const { TerminalSession } = require('./lib/terminal-session')
 const { TTS_PROVIDERS } = require('./lib/tts-provider-selection')
 const { TtsService } = require('./lib/tts-service')
 
@@ -23,127 +23,6 @@ const LOCAL_WHISPER_MODEL = process.env.LOCAL_WHISPER_MODEL || 'base.en'
 const LOCAL_WHISPER_DEVICE = process.env.LOCAL_WHISPER_DEVICE || 'cpu'
 const LOCAL_WHISPER_COMPUTE_TYPE = process.env.LOCAL_WHISPER_COMPUTE_TYPE || 'int8'
 const LOCAL_WHISPER_LANGUAGE = process.env.LOCAL_WHISPER_LANGUAGE || 'en'
-
-class TerminalSession {
-  constructor(window, ttsService) {
-    this.window = window
-    this.ttsService = ttsService
-    this.ptyProcess = null
-    this.speechQueue = Promise.resolve()
-    this.speechInterceptor = new CodexSpeechInterceptor((spokenText) => {
-      this.queueSpeech(spokenText)
-    })
-  }
-
-  start({ cols, rows }) {
-    if (this.ptyProcess) {
-      return
-    }
-
-    if (process.platform !== 'win32') {
-      throw new Error('This wrapper must be launched on Windows because the backend spawns wsl.exe.')
-    }
-
-    const shell = process.env.WSL_EXECUTABLE || 'wsl.exe'
-    const args = splitArgs(process.env.WSL_ARGS || '')
-    const cwd = process.env.USERPROFILE || os.homedir()
-    const env = {
-      ...process.env,
-      COLORTERM: 'truecolor',
-      TERM: 'xterm-256color'
-    }
-
-    this.ptyProcess = pty.spawn(shell, args, {
-      cols,
-      rows,
-      cwd,
-      env,
-      name: 'xterm-256color'
-    })
-
-    this.ptyProcess.onData((data) => {
-      this.speechInterceptor.observeOutput(data)
-      this.send('pty:data', data)
-    })
-
-    this.ptyProcess.onExit((event) => {
-      this.send('pty:exit', event)
-      this.ptyProcess = null
-    })
-  }
-
-  write(data) {
-    if (!this.ptyProcess) {
-      return
-    }
-
-    this.speechInterceptor.observeInput(data)
-    this.ptyProcess.write(data)
-  }
-
-  resize({ cols, rows }) {
-    if (!this.ptyProcess) {
-      return
-    }
-
-    this.ptyProcess.resize(cols, rows)
-  }
-
-  dispose() {
-    this.speechInterceptor.dispose()
-    this.disposePty()
-  }
-
-  disposePty() {
-    const processRef = this.ptyProcess
-    this.ptyProcess = null
-
-    if (!processRef) {
-      return
-    }
-
-    try {
-      processRef.kill()
-    } catch (_error) {
-      // The PTY can already be dead by the time Electron tears the window down.
-    }
-  }
-
-  queueSpeech(text) {
-    this.speechQueue = this.speechQueue
-      .then(async () => {
-        const audioPayload = await this.ttsService.synthesizeSpeech(text)
-
-        if (!audioPayload?.audioBuffer) {
-          return
-        }
-
-        this.send('speech:audio', {
-          audioBase64: audioPayload.audioBuffer.toString('base64'),
-          mimeType: audioPayload.mimeType,
-          provider: audioPayload.provider,
-          text
-        })
-      })
-      .catch((error) => {
-        this.sendError(error)
-      })
-  }
-
-  send(channel, payload) {
-    if (!this.window || this.window.isDestroyed()) {
-      return
-    }
-
-    this.window.webContents.send(channel, payload)
-  }
-
-  sendError(error) {
-    this.send('app:error', {
-      message: error instanceof Error ? error.message : String(error)
-    })
-  }
-}
 
 let mainWindow = null
 let terminalSession = null
@@ -188,7 +67,11 @@ function createWindow() {
     }
   })
 
-  terminalSession = new TerminalSession(mainWindow, ttsService)
+  terminalSession = new TerminalSession({
+    window: mainWindow,
+    ttsService,
+    spawnPty: pty.spawn
+  })
   mainWindow.loadFile(path.join(__dirname, 'index.html'))
 
   mainWindow.on('closed', () => {
@@ -247,15 +130,6 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
-
-function splitArgs(rawArgs) {
-  if (!rawArgs.trim()) {
-    return []
-  }
-
-  const matches = rawArgs.match(/(?:[^\s"]+|"[^"]*")+/g) || []
-  return matches.map((entry) => entry.replace(/^"(.*)"$/, '$1'))
-}
 
 function loadDotEnv(dotEnvPath) {
   if (!fs.existsSync(dotEnvPath)) {
