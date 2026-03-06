@@ -1,6 +1,6 @@
 # WSL Voice Terminal
 
-Just WSL with a mic.
+Just WSL with a mic... thats it. I was sick of typing in the terminal but i wanted the terminal simplicity with codex/claude code
 
 An Electron wrapper around `wsl.exe` with a real terminal, local mic controls, and spoken responses.
 
