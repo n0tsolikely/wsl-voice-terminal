@@ -133,6 +133,75 @@ function Get-ElectronRebuildPath([string]$RepoDir) {
   return $null
 }
 
+function Get-VsWherePath {
+  $programFilesX86 = ${env:ProgramFiles(x86)}
+  if ($programFilesX86) {
+    $candidate = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path $candidate) {
+      return $candidate
+    }
+  }
+
+  $vswherePath = Get-CommandPath 'vswhere.exe'
+  if (-not $vswherePath) {
+    $vswherePath = Get-CommandPath 'vswhere'
+  }
+
+  return $vswherePath
+}
+
+function Test-VsCppBuildTools {
+  $result = [PSCustomObject]@{
+    Detected = $false
+    Source = $null
+    Detail = $null
+  }
+
+  $vswhere = Get-VsWherePath
+  if ($vswhere) {
+    try {
+      $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+      if ($installPath) {
+        $result.Detected = $true
+        $result.Source = 'vswhere'
+        $result.Detail = $installPath.Trim()
+        return $result
+      }
+    } catch {
+      # Ignore and fall back to file checks.
+    }
+  }
+
+  $programFilesX86 = ${env:ProgramFiles(x86)}
+  if (-not $programFilesX86) {
+    return $result
+  }
+
+  $vsRoot = Join-Path $programFilesX86 'Microsoft Visual Studio'
+  $patterns = @(
+    Join-Path $vsRoot '2022\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
+    Join-Path $vsRoot '2022\Community\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
+    Join-Path $vsRoot '2022\Professional\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
+    Join-Path $vsRoot '2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe'
+  )
+
+  foreach ($pattern in $patterns) {
+    $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($match) {
+      $result.Detected = $true
+      $result.Source = 'cl.exe'
+      $result.Detail = $match.FullName
+      break
+    }
+  }
+
+  return $result
+}
+
+function Get-VsCppGuidance {
+  return 'Install Visual Studio Build Tools or Visual Studio and include the "Desktop development with C++" workload, then rerun npm install (and npm run rebuild:native if needed).'
+}
+
 function Test-Git {
   return [bool](Get-CommandPath 'git.exe') -or [bool](Get-CommandPath 'git')
 }
@@ -400,6 +469,16 @@ function Run-NpmInstall([string]$RepoDir) {
     Stop-Install 'npm is not available on PATH. Restart PowerShell after Node.js installs, then rerun install.ps1.'
   }
 
+  Write-Step 'Checking Visual Studio C++ build tools'
+  $vsCpp = Test-VsCppBuildTools
+  if ($vsCpp.Detected) {
+    Write-Pass ("Visual Studio C++ build tools detected ({0})" -f $vsCpp.Detail)
+  } else {
+    Write-Warn ("Visual Studio C++ build tools not detected. {0}" -f (Get-VsCppGuidance))
+  }
+
+  $nodePtyRequired = Test-NodePtyDependency -RepoDir $RepoDir
+
   Write-Install 'Running npm install'
   $npmSucceeded = $false
 
@@ -412,7 +491,7 @@ function Run-NpmInstall([string]$RepoDir) {
   }
 
   $needsRebuild = $false
-  if (Test-NodePtyDependency -RepoDir $RepoDir) {
+  if ($nodePtyRequired) {
     if (-not (Test-NodePtyBuild -RepoDir $RepoDir)) {
       $needsRebuild = $true
       Write-Warn 'node-pty native build not detected. Attempting rebuild.'
@@ -423,43 +502,47 @@ function Run-NpmInstall([string]$RepoDir) {
     $needsRebuild = $true
   }
 
-  if (-not $needsRebuild) {
-    return
-  }
-
-  if (Test-PackageScript -RepoDir $RepoDir -ScriptName 'rebuild:native') {
-    Write-Install 'Attempting npm run rebuild:native'
-    try {
-      Invoke-Checked -FilePath 'npm' -Arguments @('run', 'rebuild:native') -WorkingDirectory $RepoDir
-      Write-Pass 'rebuild:native completed'
-      return
-    } catch {
-      if (-not $npmSucceeded) {
-        Stop-Install ("npm install failed and rebuild:native also failed: {0}" -f $_.Exception.Message)
+  if ($needsRebuild) {
+    if (Test-PackageScript -RepoDir $RepoDir -ScriptName 'rebuild:native') {
+      Write-Install 'Attempting npm run rebuild:native'
+      try {
+        Invoke-Checked -FilePath 'npm' -Arguments @('run', 'rebuild:native') -WorkingDirectory $RepoDir
+        Write-Pass 'rebuild:native completed'
+      } catch {
+        if (-not $npmSucceeded) {
+          Stop-Install ("npm install failed and rebuild:native also failed: {0} {1}" -f $_.Exception.Message, (Get-VsCppGuidance))
+        }
+        Write-Warn ("rebuild:native failed: {0}" -f $_.Exception.Message)
       }
-      Write-Warn ("rebuild:native failed: {0}" -f $_.Exception.Message)
-      return
+    } else {
+      $rebuildPath = Get-ElectronRebuildPath -RepoDir $RepoDir
+      if ($rebuildPath) {
+        Write-Install 'Attempting electron-rebuild -f -w node-pty'
+        try {
+          Invoke-Checked -FilePath $rebuildPath -Arguments @('-f', '-w', 'node-pty') -WorkingDirectory $RepoDir
+          Write-Pass 'electron-rebuild completed'
+        } catch {
+          if (-not $npmSucceeded) {
+            Stop-Install ("npm install failed and electron-rebuild also failed: {0} {1}" -f $_.Exception.Message, (Get-VsCppGuidance))
+          }
+          Write-Warn ("electron-rebuild failed: {0}" -f $_.Exception.Message)
+        }
+      } elseif (-not $npmSucceeded) {
+        Stop-Install ("npm install failed and no rebuild:native script is available. {0}" -f (Get-VsCppGuidance))
+      }
     }
   }
 
-  $rebuildPath = Get-ElectronRebuildPath -RepoDir $RepoDir
-  if ($rebuildPath) {
-    Write-Install 'Attempting electron-rebuild -f -w node-pty'
-    try {
-      Invoke-Checked -FilePath $rebuildPath -Arguments @('-f', '-w', 'node-pty') -WorkingDirectory $RepoDir
-      Write-Pass 'electron-rebuild completed'
-      return
-    } catch {
-      if (-not $npmSucceeded) {
-        Stop-Install ("npm install failed and electron-rebuild also failed: {0}" -f $_.Exception.Message)
-      }
-      Write-Warn ("electron-rebuild failed: {0}" -f $_.Exception.Message)
-      return
+  if ($nodePtyRequired) {
+    if (Test-NodePtyBuild -RepoDir $RepoDir) {
+      Write-Pass 'node-pty native module is ready'
+    } else {
+      Stop-Install ("node-pty failed to build. {0}" -f (Get-VsCppGuidance))
     }
   }
 
   if (-not $npmSucceeded) {
-    Stop-Install 'npm install failed and no rebuild:native script is available. Install Visual Studio C++ build tools and rerun install.ps1.'
+    Stop-Install 'npm install failed. Review the errors above, fix them, and rerun install.ps1.'
   }
 }
 

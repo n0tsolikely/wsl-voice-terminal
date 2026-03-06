@@ -84,6 +84,67 @@ function hasRebuildScript(pkg) {
   return Boolean(pkg?.scripts && pkg.scripts['rebuild:native'])
 }
 
+function hasNodePtyDependency(pkg) {
+  return Boolean(pkg?.dependencies?.['node-pty'] || pkg?.optionalDependencies?.['node-pty'])
+}
+
+function getPythonInfo() {
+  const py311 = run('py -3.11 --version')
+  if (py311) {
+    return { ok: true, label: py311 }
+  }
+  const python = run('python --version') || run('python3 --version')
+  if (python) {
+    return { ok: true, label: python }
+  }
+  return { ok: false, label: null }
+}
+
+function detectVsCppTools() {
+  const programFilesX86 = process.env['ProgramFiles(x86)']
+  if (programFilesX86) {
+    const vswherePath = path.join(programFilesX86, 'Microsoft Visual Studio', 'Installer', 'vswhere.exe')
+    if (fs.existsSync(vswherePath)) {
+      const output = run(`"${vswherePath}" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`)
+      if (output) {
+        return { detected: true, detail: output, source: 'vswhere' }
+      }
+    }
+  }
+
+  if (commandExists('vswhere')) {
+    const output = run('vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath')
+    if (output) {
+      return { detected: true, detail: output, source: 'vswhere' }
+    }
+  }
+
+  if (!programFilesX86) {
+    return { detected: false, detail: null, source: null }
+  }
+
+  const vsRoot = path.join(programFilesX86, 'Microsoft Visual Studio', '2022')
+  const editions = ['BuildTools', 'Community', 'Professional', 'Enterprise']
+  for (const edition of editions) {
+    const msvcRoot = path.join(vsRoot, edition, 'VC', 'Tools', 'MSVC')
+    if (!fs.existsSync(msvcRoot)) continue
+    let versions = []
+    try {
+      versions = fs.readdirSync(msvcRoot)
+    } catch {
+      versions = []
+    }
+    for (const version of versions) {
+      const clPath = path.join(msvcRoot, version, 'bin', 'Hostx64', 'x64', 'cl.exe')
+      if (fs.existsSync(clPath)) {
+        return { detected: true, detail: clPath, source: 'cl.exe' }
+      }
+    }
+  }
+
+  return { detected: false, detail: null, source: null }
+}
+
 const repoRoot = findRepoRoot(process.cwd()) || process.cwd()
 const pkgPath = path.join(repoRoot, 'package.json')
 const hasPackage = fs.existsSync(pkgPath)
@@ -105,16 +166,24 @@ const npmVersion = run('npm -v')
 if (npmVersion) {
   log('OK', `npm detected: ${npmVersion}`)
 } else {
-  warnCount += 1
-  log('WARN', 'npm not found on PATH')
+  failCount += 1
+  log('FAIL', 'npm not found on PATH')
 }
 
 const gitVersion = run('git --version')
 if (gitVersion) {
   log('OK', 'Git detected')
 } else {
-  warnCount += 1
-  log('WARN', 'Git not found on PATH')
+  failCount += 1
+  log('FAIL', 'Git not found on PATH')
+}
+
+const pythonInfo = getPythonInfo()
+if (pythonInfo.ok) {
+  log('OK', `Python detected: ${pythonInfo.label}`)
+} else {
+  failCount += 1
+  log('FAIL', 'Python not found (local Whisper needs Python 3.11)')
 }
 
 const wslSystemPath = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'wsl.exe')
@@ -122,8 +191,16 @@ const wslExists = fs.existsSync(wslSystemPath) || commandExists('wsl')
 if (wslExists) {
   log('OK', 'WSL detected')
 } else {
+  failCount += 1
+  log('FAIL', 'WSL not found. Run: wsl --install (then reboot)')
+}
+
+const vsCpp = detectVsCppTools()
+if (vsCpp.detected) {
+  log('OK', `Visual Studio C++ build tools detected (${vsCpp.source})`)
+} else {
   warnCount += 1
-  log('WARN', 'WSL not found. Run: wsl --install (then reboot)')
+  log('WARN', 'Visual Studio C++ build tools not detected. Install Visual Studio Build Tools with Desktop development with C++ if node-pty fails to build.')
 }
 
 const envPath = path.join(repoRoot, '.env')
@@ -154,6 +231,27 @@ if (fs.existsSync(launchBat)) {
   log('WARN', 'launch-wsl-voice-terminal.bat missing')
 }
 
+const nodeModulesPath = path.join(repoRoot, 'node_modules')
+if (fs.existsSync(nodeModulesPath)) {
+  log('OK', 'node_modules present')
+} else {
+  failCount += 1
+  log('FAIL', 'node_modules missing (run npm install)')
+}
+
+const nodePtyBinary = path.join(repoRoot, 'node_modules', 'node-pty', 'build', 'Release', 'pty.node')
+if (hasNodePtyDependency(pkg)) {
+  if (fs.existsSync(nodePtyBinary)) {
+    log('OK', 'node-pty native module built')
+  } else {
+    failCount += 1
+    log('FAIL', 'node-pty native module missing (run npm run rebuild:native)')
+  }
+} else {
+  warnCount += 1
+  log('WARN', 'node-pty dependency not detected in package.json')
+}
+
 const whisperReq = path.join(repoRoot, 'requirements.local-whisper.txt')
 if (fs.existsSync(whisperReq)) {
   log('INFO', 'Local Whisper requirements present')
@@ -180,8 +278,8 @@ if (hasStartScript(pkg)) {
 if (hasRebuildScript(pkg)) {
   log('OK', 'rebuild:native script found')
 } else {
-  log('WARN', 'rebuild:native script missing')
   warnCount += 1
+  log('WARN', 'rebuild:native script missing')
 }
 
 if (failCount > 0) {
