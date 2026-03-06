@@ -178,14 +178,34 @@ function Test-VsCppBuildTools {
   }
 
   $vsRoot = Join-Path $programFilesX86 'Microsoft Visual Studio'
-  $patterns = @(
-    Join-Path $vsRoot '2022\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
-    Join-Path $vsRoot '2022\Community\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
-    Join-Path $vsRoot '2022\Professional\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
-    Join-Path $vsRoot '2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe'
+  if ($vsRoot -is [System.Array]) {
+    $vsRoot = $vsRoot | Select-Object -First 1
+  }
+
+  $childPaths = @(
+    '2022\BuildTools\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
+    '2022\Community\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
+    '2022\Professional\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe',
+    '2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe'
   )
 
+  $patterns = foreach ($child in $childPaths) {
+    if (-not $child) {
+      continue
+    }
+    if ($child -is [System.Array]) {
+      $child = $child | Select-Object -First 1
+    }
+    Join-Path -Path $vsRoot -ChildPath $child
+  }
+
   foreach ($pattern in $patterns) {
+    if (-not $pattern) {
+      continue
+    }
+    if ($pattern -is [System.Array]) {
+      $pattern = $pattern | Select-Object -First 1
+    }
     $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($match) {
       $result.Detected = $true
@@ -234,7 +254,16 @@ function Get-VsCppGuidance {
 
 function Ensure-VsBuildTools([string]$WingetPath) {
   Write-Step 'Checking Visual Studio C++ build tools'
-  $vsCpp = Test-VsCppBuildTools
+  try {
+    $vsCpp = Test-VsCppBuildTools
+  } catch {
+    Write-Warn 'Visual Studio build tools detection encountered an internal check error. Continuing with guidance-based fallback.'
+    $vsCpp = [PSCustomObject]@{
+      Detected = $false
+      Source = 'error'
+      Detail = $null
+    }
+  }
   if ($vsCpp.Detected) {
     Write-Pass ("Visual Studio C++ build tools detected ({0})" -f $vsCpp.Detail)
     return @{
