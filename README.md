@@ -12,14 +12,16 @@ An Electron wrapper around `wsl.exe` with a real terminal, local mic controls, a
 
 ## Speech
 
-- If `OPENAI_API_KEY` exists, transcription uses OpenAI and reply TTS is available.
+- If `OPENAI_API_KEY` exists, transcription uses OpenAI and reply TTS defaults to OpenAI.
 - If `OPENAI_API_KEY` is empty, transcription falls back to local `faster-whisper` and installs itself on first use.
+- Reply TTS can also fall back to local Windows speech synthesis when `TTS_PROVIDER=auto` or `TTS_PROVIDER=local`.
 - Local fallback defaults to `base.en` on `cpu` with `int8` compute for Windows reliability. You can override that in `.env`.
+- Local TTS uses Windows PowerShell and `System.Speech`, so it is Windows-only.
 
 ## Run
 
 1. `npm install`
-2. Copy `.env.example` to `.env` if you want to set an OpenAI key or tweak local whisper settings
+2. Copy `.env.example` to `.env` if you want to set an OpenAI key, choose a TTS provider, or tweak local whisper settings
 3. Double-click `launch-wsl-voice-terminal.bat`
 
 ## Notes

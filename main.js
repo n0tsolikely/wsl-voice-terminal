@@ -10,6 +10,7 @@ const {
   getLastNonEmptyLine,
   normalizeTerminalText
 } = require('./lib/terminal-speech')
+const { TTS_PROVIDERS, resolveTtsProvider } = require('./lib/tts-provider-selection')
 
 loadDotEnv(path.join(__dirname, '.env'))
 
@@ -18,6 +19,8 @@ const TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1
 const TTS_MODEL = process.env.OPENAI_TTS_MODEL || 'tts-1'
 const TTS_VOICE = process.env.OPENAI_TTS_VOICE || 'alloy'
 const TTS_FORMAT = 'mp3'
+const TTS_PROVIDER = process.env.TTS_PROVIDER || TTS_PROVIDERS.AUTO
+const LOCAL_TTS_VOICE = process.env.LOCAL_TTS_VOICE || ''
 const LOCAL_WHISPER_MODEL = process.env.LOCAL_WHISPER_MODEL || 'base.en'
 const LOCAL_WHISPER_DEVICE = process.env.LOCAL_WHISPER_DEVICE || 'cpu'
 const LOCAL_WHISPER_COMPUTE_TYPE = process.env.LOCAL_WHISPER_COMPUTE_TYPE || 'int8'
@@ -33,9 +36,7 @@ class OpenAIClient {
     const apiKey = process.env.OPENAI_API_KEY
 
     if (!apiKey) {
-      throw new Error(
-        'OPENAI_API_KEY is missing. Local transcription fallback is available, but TTS still needs an API key.'
-      )
+      throw new Error('OPENAI_API_KEY is missing.')
     }
 
     return apiKey
@@ -105,6 +106,101 @@ class OpenAIClient {
     }
 
     return `recording.${extensionMap[mimeType] || 'webm'}`
+  }
+}
+
+class LocalTtsClient {
+  get scriptPath() {
+    return path.join(__dirname, 'scripts', 'local_tts_to_wave.ps1')
+  }
+
+  isAvailable() {
+    return process.platform === 'win32'
+  }
+
+  async synthesizeSpeech(text) {
+    const speechInput = text.trim().slice(0, MAX_TTS_CHARS)
+
+    if (!speechInput) {
+      return null
+    }
+
+    if (!this.isAvailable()) {
+      throw new Error('Local Windows TTS is only available when this app is running on Windows.')
+    }
+
+    const tempToken = crypto.randomUUID()
+    const textPath = path.join(os.tmpdir(), `wsl-voice-terminal-${tempToken}.txt`)
+    const outPath = path.join(os.tmpdir(), `wsl-voice-terminal-${tempToken}.wav`)
+
+    await fs.promises.writeFile(textPath, speechInput, 'utf8')
+
+    try {
+      const args = [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        this.scriptPath,
+        '-TextPath',
+        textPath,
+        '-OutPath',
+        outPath
+      ]
+
+      if (LOCAL_TTS_VOICE.trim()) {
+        args.push('-Voice', LOCAL_TTS_VOICE.trim())
+      }
+
+      await runCommand('powershell.exe', args, {
+        cwd: __dirname
+      })
+
+      return fs.promises.readFile(outPath)
+    } catch (error) {
+      throw new Error(`Local Windows TTS failed: ${error.message}`)
+    } finally {
+      fs.promises.unlink(textPath).catch(() => {})
+      fs.promises.unlink(outPath).catch(() => {})
+    }
+  }
+}
+
+class TtsService {
+  constructor({ openAIClient, localTtsClient }) {
+    this.openAIClient = openAIClient
+    this.localTtsClient = localTtsClient
+  }
+
+  async synthesizeSpeech(text) {
+    const provider = resolveTtsProvider({
+      requestedProvider: TTS_PROVIDER,
+      hasOpenAiKey: this.openAIClient.hasApiKey(),
+      hasLocalTts: this.localTtsClient.isAvailable()
+    })
+
+    if (provider === TTS_PROVIDERS.OPENAI) {
+      const audioBuffer = await this.openAIClient.synthesizeSpeech(text)
+
+      return audioBuffer
+        ? {
+            audioBuffer,
+            mimeType: 'audio/mpeg',
+            provider
+          }
+        : null
+    }
+
+    const audioBuffer = await this.localTtsClient.synthesizeSpeech(text)
+
+    return audioBuffer
+      ? {
+          audioBuffer,
+          mimeType: 'audio/wav',
+          provider
+        }
+      : null
   }
 }
 
@@ -455,9 +551,9 @@ class CodexSpeechInterceptor {
 }
 
 class TerminalSession {
-  constructor(window, openAIClient) {
+  constructor(window, ttsService) {
     this.window = window
-    this.openAIClient = openAIClient
+    this.ttsService = ttsService
     this.ptyProcess = null
     this.speechQueue = Promise.resolve()
     this.speechInterceptor = new CodexSpeechInterceptor((spokenText) => {
@@ -542,15 +638,16 @@ class TerminalSession {
   queueSpeech(text) {
     this.speechQueue = this.speechQueue
       .then(async () => {
-        const audioBuffer = await this.openAIClient.synthesizeSpeech(text)
+        const audioPayload = await this.ttsService.synthesizeSpeech(text)
 
-        if (!audioBuffer) {
+        if (!audioPayload?.audioBuffer) {
           return
         }
 
         this.send('speech:audio', {
-          audioBase64: audioBuffer.toString('base64'),
-          mimeType: 'audio/mpeg',
+          audioBase64: audioPayload.audioBuffer.toString('base64'),
+          mimeType: audioPayload.mimeType,
+          provider: audioPayload.provider,
           text
         })
       })
@@ -577,6 +674,8 @@ class TerminalSession {
 let mainWindow = null
 let terminalSession = null
 const openAIClient = new OpenAIClient()
+const localTtsClient = new LocalTtsClient()
+const ttsService = new TtsService({ openAIClient, localTtsClient })
 const localWhisperClient = new LocalWhisperClient()
 
 function createWindow() {
@@ -593,7 +692,7 @@ function createWindow() {
     }
   })
 
-  terminalSession = new TerminalSession(mainWindow, openAIClient)
+  terminalSession = new TerminalSession(mainWindow, ttsService)
   mainWindow.loadFile(path.join(__dirname, 'index.html'))
 
   mainWindow.on('closed', () => {
@@ -628,11 +727,12 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('speech:preview', async (_event, payload) => {
-    const audioBuffer = await openAIClient.synthesizeSpeech(payload.text || '')
+    const audioPayload = await ttsService.synthesizeSpeech(payload.text || '')
 
     return {
-      audioBase64: audioBuffer ? audioBuffer.toString('base64') : '',
-      mimeType: 'audio/mpeg',
+      audioBase64: audioPayload?.audioBuffer ? audioPayload.audioBuffer.toString('base64') : '',
+      mimeType: audioPayload?.mimeType || 'audio/mpeg',
+      provider: audioPayload?.provider || '',
       text: payload.text || ''
     }
   })
