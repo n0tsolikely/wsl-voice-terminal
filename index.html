@@ -9,6 +9,9 @@
       :root {
         color-scheme: dark;
         font-family: "Segoe UI", sans-serif;
+        --terminal-frame-padding: 12px;
+        --terminal-scrollbar-width: 16px;
+        --terminal-scrollbar-gap: 6px;
       }
 
       * {
@@ -28,10 +31,51 @@
         position: relative;
       }
 
+      #terminalShell {
+        position: absolute;
+        inset: var(--terminal-frame-padding);
+        overflow: hidden;
+      }
+
       #terminal {
         width: 100%;
         height: 100%;
-        padding: 12px;
+        padding-right: calc(var(--terminal-scrollbar-width) + var(--terminal-scrollbar-gap));
+      }
+
+      #terminal .xterm,
+      #terminal .xterm-viewport {
+        height: 100%;
+      }
+
+      #terminal .xterm-viewport {
+        scrollbar-gutter: stable;
+        scrollbar-width: auto;
+        scrollbar-color: rgba(255, 255, 255, 0.42) rgba(255, 255, 255, 0.08);
+      }
+
+      #terminal .xterm-viewport::-webkit-scrollbar {
+        width: var(--terminal-scrollbar-width);
+      }
+
+      #terminal .xterm-viewport::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.06);
+        border-radius: 999px;
+      }
+
+      #terminal .xterm-viewport::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.42);
+        border: 3px solid rgba(17, 17, 17, 0.92);
+        border-radius: 999px;
+      }
+
+      #terminal .xterm-viewport::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.56);
+      }
+
+      #terminal .xterm-screen,
+      #terminal .xterm-selection {
+        margin-right: calc(var(--terminal-scrollbar-width) + var(--terminal-scrollbar-gap));
       }
 
       #overlay {
@@ -73,12 +117,28 @@
         color: #ffb0b0;
       }
 
+      #modeDetail {
+        min-height: 32px;
+        color: rgba(255, 255, 255, 0.66);
+        font-size: 11px;
+        letter-spacing: 0.015em;
+        line-height: 1.45;
+      }
+
+      #modeDetail[data-tone="muted"] {
+        color: rgba(255, 229, 180, 0.78);
+      }
+
       #meter {
         height: 34px;
         display: grid;
         grid-template-columns: repeat(16, minmax(0, 1fr));
         gap: 4px;
         align-items: end;
+      }
+
+      #meter[data-active="false"] .meterBar {
+        opacity: 0.2;
       }
 
       .meterBar {
@@ -140,6 +200,15 @@
         color: #fff1d6;
       }
 
+      .modeButton:disabled {
+        cursor: default;
+        transform: none;
+      }
+
+      .modeButton[data-supported="false"] {
+        color: rgba(255, 255, 255, 0.42);
+      }
+
       #speakerButton {
         min-height: 36px;
         padding: 0 14px;
@@ -161,6 +230,12 @@
         transform: translateY(-1px);
         border-color: rgba(181, 199, 255, 0.35);
         background: rgba(91, 124, 255, 0.22);
+      }
+
+      #speakerButton:disabled {
+        cursor: wait;
+        opacity: 0.62;
+        transform: none;
       }
 
       #micButton {
@@ -203,6 +278,16 @@
         border-color: rgba(255, 218, 133, 0.52);
       }
 
+      #micButton[data-state="playing"] {
+        background: rgba(31, 60, 121, 0.94);
+        border-color: rgba(145, 191, 255, 0.48);
+      }
+
+      #micButton:disabled {
+        cursor: default;
+        transform: none;
+      }
+
       #micButton:focus-visible {
         outline: 2px solid rgba(255, 255, 255, 0.8);
         outline-offset: 3px;
@@ -215,10 +300,13 @@
     </style>
   </head>
   <body>
-    <div id="terminal"></div>
+    <div id="terminalShell">
+      <div id="terminal"></div>
+    </div>
     <div id="overlay">
       <div id="controlPanel">
         <div id="status" aria-live="polite">Click mic to talk. Press Enter to stop.</div>
+        <div id="modeDetail">Click once to record. Click again or press Enter to stop.</div>
         <div id="meter" aria-hidden="true">
           <span class="meterBar"></span>
           <span class="meterBar"></span>
@@ -264,6 +352,8 @@
     </div>
     <script src="./node_modules/xterm/lib/xterm.js"></script>
     <script src="./node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+    <script src="./lib/mic-state.js"></script>
+    <script src="./lib/dictation-buffer.js"></script>
     <script src="./mic-controls.js"></script>
     <script src="./renderer.js"></script>
   </body>

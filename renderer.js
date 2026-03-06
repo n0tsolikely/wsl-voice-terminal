@@ -1,10 +1,14 @@
 (function bootstrap() {
   const api = window.terminalAPI
-  const { MIC_MODES, shouldConsumeEnterForMic } = window.WslVoiceTerminalMic
+  const micStateApi = window.WslVoiceTerminalMicState
+  const dictationApi = window.WslVoiceTerminalDictationBuffer
   const terminalElement = document.getElementById('terminal')
+  const controlPanel = document.getElementById('controlPanel')
   const micButton = document.getElementById('micButton')
   const speakerButton = document.getElementById('speakerButton')
   const statusElement = document.getElementById('status')
+  const modeDetailElement = document.getElementById('modeDetail')
+  const meterElement = document.getElementById('meter')
   const modeButtons = Array.from(document.querySelectorAll('.modeButton'))
   const meterBars = Array.from(document.querySelectorAll('.meterBar'))
   const fitAddon = new window.FitAddon.FitAddon()
@@ -21,32 +25,64 @@
     }
   })
   const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition || null
-  const AUTO_START_THRESHOLD = 0.04
-  const AUTO_CONTINUE_THRESHOLD = 0.024
-  const AUTO_START_HOLD_MS = 160
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext || null
+  const {
+    AUTO_STRATEGIES,
+    MIC_MODES,
+    MIC_PHASES,
+    createMicState,
+    getEnterIntentForMicState,
+    getMicButtonIntent,
+    getMicViewModel,
+    transitionMicState
+  } = micStateApi
+  const {
+    appendCommittedDictation,
+    appendWords,
+    clearInterimDictation,
+    commitInterimDictation,
+    consumeTerminalInput,
+    createDictationBuffer,
+    normalizeDictationText,
+    replaceInterimDictation
+  } = dictationApi
+  const AUTO_START_THRESHOLD = 0.018
+  const AUTO_CONTINUE_THRESHOLD = 0.012
+  const AUTO_START_HOLD_MS = 120
   const AUTO_STOP_SILENCE_MS = 1100
   const MIN_RECORDING_MS = 350
   const PLAYBACK_COOLDOWN_MS = 450
-  const LIVE_DICTATION_FALLBACK_MS = 1400
+  const LIVE_DICTATION_FALLBACK_MS = 650
+  const LIVE_RESULT_GRACE_MS = 900
+  const STATUS_NOTICE_MS = 2600
+  const BUSY_PHASES = new Set([
+    MIC_PHASES.RECORDING,
+    MIC_PHASES.STOPPING,
+    MIC_PHASES.TRANSCRIBING
+  ])
+  const runtimeSupport = {
+    capture: Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder),
+    liveDictation: Boolean(SpeechRecognitionClass),
+    meter: Boolean(AudioContextClass)
+  }
 
-  let micMode = MIC_MODES.TOGGLE
+  let micState = createMicState({
+    mode: MIC_MODES.TOGGLE,
+    liveDictationSupported: runtimeSupport.liveDictation
+  })
+  let dictationBuffer = createDictationBuffer()
   let mediaStream = null
   let mediaRecorder = null
   let speechRecognition = null
   let currentCapture = null
   let activePointerId = null
+  let pendingHoldStop = false
   let isStartingRecording = false
-  let isStoppingRecording = false
-  let isTranscribing = false
-  let autoListenEnabled = false
-  let autoModeStrategy = SpeechRecognitionClass ? 'live' : 'capture'
   let liveRecognitionRestartTimer = 0
-  let liveCommittedText = ''
-  let liveInterimText = ''
-  let liveFallbackVoiceSince = 0
-  let lastLiveResultAt = 0
   let voiceCandidateSince = 0
   let lastVoiceAt = 0
+  let liveFallbackVoiceSince = 0
+  let lastLiveResultAt = 0
   let playbackQuietUntil = 0
   let audioContext = null
   let analyser = null
@@ -54,17 +90,20 @@
   let frequencyData = null
   let timeDomainData = null
   let meterAnimationFrame = 0
+  let statusOverride = null
+  let statusOverrideTimer = 0
+  let isPreviewRequestPending = false
   const playbackQueue = []
   let isPlayingAudio = false
 
   terminal.loadAddon(fitAddon)
   terminal.open(terminalElement)
   fitAddon.fit()
-  terminal.focus()
+  focusTerminal()
   terminal.attachCustomKeyEventHandler((event) => {
     if (
       event.type === 'keydown' &&
-      event.key.toLowerCase() === 'v' &&
+      event.key?.toLowerCase() === 'v' &&
       (event.ctrlKey || event.metaKey) &&
       !event.altKey
     ) {
@@ -76,28 +115,19 @@
       return false
     }
 
-    if (
-      shouldConsumeEnterForMic({
-        eventType: event.type,
-        key: event.key,
-        micMode,
-        isRecording: isRecording(),
-        isStoppingRecording,
-        isTranscribing
-      })
-    ) {
+    const enterIntent = getEnterIntentForMicState(micState)
+
+    if (event.type === 'keydown' && event.key === 'Enter' && enterIntent !== 'pass-through') {
       event.preventDefault()
       event.stopPropagation()
 
-      if (isRecording()) {
+      if (enterIntent === 'stop-recording') {
         stopRecording({
           reason: 'manual-enter',
-          keepAutoArmed: micMode === MIC_MODES.AUTO && autoListenEnabled
+          keepAutoArmed: isAutoArmed()
         })
-      } else if (isTranscribing) {
-        setStatus('Transcribing...')
-      } else if (isStoppingRecording) {
-        setStatus('Finishing capture...')
+      } else {
+        renderUi()
       }
 
       return false
@@ -123,9 +153,14 @@
   })
 
   api.onStatus((payload) => {
-    if (payload?.message) {
-      setStatus(payload.message)
+    if (!payload?.message) {
+      return
     }
+
+    setStatus(payload.message, 'default', {
+      durationMs: 3800,
+      persistDuringBusy: true
+    })
   })
 
   api
@@ -148,15 +183,28 @@
     event.preventDefault()
     writePastedText(text)
   })
+
   modeButtons.forEach((button) => {
     button.addEventListener('click', () => {
       setMicMode(button.dataset.mode)
-      terminal.focus()
+      focusTerminal()
     })
   })
+
   speakerButton.addEventListener('click', async () => {
+    if (isPreviewRequestPending) {
+      focusTerminal()
+      return
+    }
+
     try {
-      setStatus('Requesting test voice...')
+      isPreviewRequestPending = true
+      renderUi()
+      setStatus('Requesting test voice...', 'default', {
+        sticky: true,
+        persistDuringBusy: true
+      })
+
       const payload = await api.previewSpeech({
         text: 'Speaker test. If you can hear this, terminal audio output is working.'
       })
@@ -165,15 +213,25 @@
         throw new Error('The TTS test returned no audio.')
       }
 
+      clearStatus({ preserveErrors: false })
       enqueueSpeech(payload)
-      terminal.focus()
     } catch (error) {
       setStatus(error.message, 'error')
+    } finally {
+      isPreviewRequestPending = false
+      renderUi()
+      focusTerminal()
     }
   })
 
   micButton.addEventListener('pointerdown', async (event) => {
-    if (micMode !== MIC_MODES.HOLD) {
+    if (event.button !== 0) {
+      return
+    }
+
+    const intent = getMicButtonIntent(micState, 'pointerdown')
+
+    if (intent !== 'start-recording') {
       return
     }
 
@@ -184,24 +242,52 @@
     }
 
     activePointerId = event.pointerId
+    pendingHoldStop = false
     micButton.setPointerCapture(event.pointerId)
 
     try {
-      await startRecording({ source: MIC_MODES.HOLD })
+      await handleMicIntent(intent, { source: MIC_MODES.HOLD })
     } catch (error) {
+      releaseMicPointerCapture(event.pointerId)
       activePointerId = null
       setStatus(error.message, 'error')
+    } finally {
+      focusTerminal()
     }
   })
 
   micButton.addEventListener('pointerup', (event) => {
-    if (micMode === MIC_MODES.HOLD && event.pointerId === activePointerId) {
+    if (event.pointerId !== activePointerId) {
+      return
+    }
+
+    releaseMicPointerCapture(event.pointerId)
+
+    if (isStartingRecording) {
+      pendingHoldStop = true
+      activePointerId = null
+      return
+    }
+
+    if (getMicButtonIntent(micState, 'pointerup') === 'stop-recording') {
       stopRecording({ reason: 'hold-release' })
     }
   })
 
   micButton.addEventListener('pointercancel', (event) => {
-    if (micMode === MIC_MODES.HOLD && event.pointerId === activePointerId) {
+    if (event.pointerId !== activePointerId) {
+      return
+    }
+
+    releaseMicPointerCapture(event.pointerId)
+
+    if (isStartingRecording) {
+      pendingHoldStop = true
+      activePointerId = null
+      return
+    }
+
+    if (getMicButtonIntent(micState, 'pointercancel') === 'stop-recording') {
       stopRecording({ reason: 'hold-cancel' })
     }
   })
@@ -209,41 +295,55 @@
   micButton.addEventListener('click', async (event) => {
     event.preventDefault()
 
-    if (micMode === MIC_MODES.HOLD) {
-      terminal.focus()
-      return
-    }
+    const intent = getMicButtonIntent(micState, 'click')
 
     try {
-      if (micMode === MIC_MODES.TOGGLE) {
-        if (isRecording()) {
-          stopRecording({ reason: 'manual-click' })
-        } else if (!isStartingRecording && !isTranscribing) {
-          await startRecording({ source: MIC_MODES.TOGGLE })
-        }
-      } else if (micMode === MIC_MODES.AUTO) {
-        if (autoListenEnabled) {
-          disableAutoListening()
-        } else if (!isTranscribing) {
-          await enableAutoListening()
-        }
-      }
+      await handleMicIntent(intent)
     } catch (error) {
       setStatus(error.message, 'error')
     } finally {
-      terminal.focus()
+      focusTerminal()
     }
   })
 
   initializeUi()
 
+  async function handleMicIntent(intent, { source = micState.mode } = {}) {
+    switch (intent) {
+      case 'focus-terminal':
+        return
+      case 'start-recording':
+        await startRecording({ source })
+        return
+      case 'stop-recording':
+        stopRecording({
+          reason: 'manual-click',
+          keepAutoArmed: isAutoArmed()
+        })
+        return
+      case 'arm-auto':
+        await enableAutoListening()
+        return
+      case 'disarm-auto':
+        disableAutoListening()
+        return
+      default:
+        return
+    }
+  }
+
   async function startRecording({ source, keepAutoArmed = false }) {
-    if (isRecording() || isStartingRecording || isStoppingRecording || isTranscribing) {
+    if (isRecording() || isStartingRecording || isBusyMicPhase(micState.phase)) {
       return
     }
 
+    clearStatus({ preserveErrors: false })
     isStartingRecording = true
-    updateMicButtonState()
+    renderUi()
+    setStatus('Opening mic...', 'default', {
+      sticky: true,
+      persistDuringBusy: true
+    })
 
     try {
       await ensureMicrophoneReady()
@@ -275,98 +375,117 @@
         'stop',
         async () => {
           const mimeType = recorder.mimeType || 'audio/webm'
-          const shouldResumeAuto =
-            capture.keepAutoArmed && micMode === MIC_MODES.AUTO && autoListenEnabled
+          const shouldResumeAuto = Boolean(currentCapture?.keepAutoArmed) && isAutoArmed()
+          const pointerId = activePointerId
 
-          if (currentCapture === capture) {
-            currentCapture = null
-          }
-
+          currentCapture = null
           mediaRecorder = null
           activePointerId = null
+          pendingHoldStop = false
+          releaseMicPointerCapture(pointerId)
 
           try {
             const blob = new Blob(chunks, { type: mimeType })
 
             if (blob.size === 0) {
-              setStatus(shouldResumeAuto ? 'Auto listening is on.' : getIdleStatus())
+              transitionMic({
+                type: 'RESET_TO_REST'
+              })
+              setStatus(
+                shouldResumeAuto ? 'Auto listening is on. No speech detected.' : 'No speech detected.',
+                'default'
+              )
+              focusTerminal()
               return
             }
 
-            isTranscribing = true
-            updateMicButtonState()
-            setStatus('Transcribing...')
+            transitionMic({
+              type: 'TRANSCRIBING_STARTED'
+            })
 
             const transcript = await api.transcribeAudio({
               audioBuffer: await blob.arrayBuffer(),
               mimeType: blob.type || mimeType
             })
-            const injectedText = normalizeTranscript(transcript)
+            const injectedText = normalizeDictationText(transcript)
 
             if (!injectedText) {
+              transitionMic({
+                type: 'TRANSCRIPTION_EMPTY'
+              })
               setStatus(
-                shouldResumeAuto ? 'Auto listening is on. No speech detected.' : 'No speech detected.'
+                shouldResumeAuto ? 'Auto listening is on. No speech detected.' : 'No speech detected.',
+                'default'
               )
-              terminal.focus()
+              focusTerminal()
               return
             }
 
             api.writeToPty(injectedText)
-            setStatus(
-              shouldResumeAuto
-                ? 'Transcript injected. Auto listening stays on.'
-                : 'Transcript injected. Press Enter to run.'
-            )
-            terminal.focus()
+            transitionMic({
+              type: 'TRANSCRIPTION_INJECTED'
+            })
+
+            if (shouldResumeAuto) {
+              setStatus('Transcript injected. Auto listening stays on.')
+            }
+
+            focusTerminal()
           } catch (error) {
+            transitionMic({
+              type: 'RESET_TO_REST'
+            })
             setStatus(error.message, 'error')
-          } finally {
-            isStoppingRecording = false
-            isTranscribing = false
-            updateMicButtonState()
           }
         },
         { once: true }
       )
 
       recorder.start()
-      updateMicButtonState()
-      setStatus(getRecordingStatus(source))
-      terminal.focus()
+      transitionMic({
+        type: 'RECORDING_STARTED',
+        source
+      })
+      clearStatus({ preserveErrors: false })
+
+      if (source === MIC_MODES.HOLD && pendingHoldStop) {
+        pendingHoldStop = false
+        stopRecording({ reason: 'hold-release' })
+      }
+
+      focusTerminal()
     } catch (error) {
-      isStoppingRecording = false
+      transitionMic({
+        type: 'RESET_TO_REST'
+      })
       setStatus(error.message, 'error')
-      updateMicButtonState()
       throw error
     } finally {
       isStartingRecording = false
-      updateMicButtonState()
+      renderUi()
     }
   }
 
   function stopRecording({ reason = 'manual-stop', keepAutoArmed = false } = {}) {
-    if (!isRecording() || isStoppingRecording) {
+    if (!isRecording() || micState.phase === MIC_PHASES.STOPPING) {
       activePointerId = null
-      updateMicButtonState()
+      renderUi()
       return false
     }
 
-    isStoppingRecording = true
     if (currentCapture) {
       currentCapture.keepAutoArmed = keepAutoArmed
     }
 
-    if (reason === 'manual-enter') {
-      setStatus('Finishing capture...')
-    } else if (reason === 'auto-silence') {
-      setStatus('Heard enough. Transcribing...')
-    } else {
-      setStatus('Stopping mic...')
+    if (reason === 'mode-change' || reason === 'auto-disabled') {
+      clearStatus({ preserveErrors: false })
     }
 
+    transitionMic({
+      type: 'RECORDING_STOPPING'
+    })
     mediaRecorder.stop()
-    updateMicButtonState()
-    terminal.focus()
+    focusTerminal()
     return true
   }
 
@@ -379,6 +498,10 @@
     playbackQueue.push(payload)
 
     if (!isPlayingAudio) {
+      isPlayingAudio = true
+      transitionMic({
+        type: 'PLAYBACK_STARTED'
+      })
       playNextSpeech()
     }
   }
@@ -387,19 +510,18 @@
     if (!playbackQueue.length) {
       isPlayingAudio = false
       playbackQuietUntil = performance.now() + PLAYBACK_COOLDOWN_MS
-      restoreIdleStatus()
+      transitionMic({
+        type: 'PLAYBACK_FINISHED'
+      })
       return
     }
 
-    isPlayingAudio = true
     const payload = playbackQueue.shift()
     const bytes = base64ToUint8Array(payload.audioBase64)
     const blob = new Blob([bytes], { type: payload.mimeType || 'audio/mpeg' })
     const objectUrl = URL.createObjectURL(blob)
     const audio = new Audio(objectUrl)
     let finished = false
-
-    setStatus('Playing response...')
 
     const finalize = (errorMessage) => {
       if (finished) {
@@ -435,9 +557,55 @@
     }
   }
 
-  function setStatus(message, tone = 'default') {
-    statusElement.textContent = message
-    statusElement.dataset.tone = tone
+  function setStatus(message, tone = 'default', options = {}) {
+    if (!message) {
+      clearStatus({ preserveErrors: false })
+      return
+    }
+
+    clearStatusTimer()
+
+    const sticky = options.sticky ?? tone === 'error'
+    const durationMs = options.durationMs ?? (sticky ? 0 : STATUS_NOTICE_MS)
+
+    statusOverride = {
+      message,
+      tone,
+      sticky,
+      persistDuringBusy: Boolean(options.persistDuringBusy),
+      expiresAt: durationMs ? performance.now() + durationMs : 0
+    }
+
+    if (!sticky && durationMs > 0) {
+      statusOverrideTimer = window.setTimeout(() => {
+        if (statusOverride?.expiresAt && statusOverride.expiresAt <= performance.now()) {
+          statusOverride = null
+          renderStatus()
+        }
+      }, durationMs + 20)
+    }
+
+    renderStatus()
+  }
+
+  function clearStatus({ preserveErrors = true } = {}) {
+    if (preserveErrors && statusOverride?.tone === 'error') {
+      renderStatus()
+      return
+    }
+
+    clearStatusTimer()
+    statusOverride = null
+    renderStatus()
+  }
+
+  function clearStatusTimer() {
+    if (!statusOverrideTimer) {
+      return
+    }
+
+    window.clearTimeout(statusOverrideTimer)
+    statusOverrideTimer = 0
   }
 
   async function pasteClipboardText() {
@@ -453,133 +621,171 @@
   function writePastedText(text) {
     api.writeToPty(normalizePastedText(text))
     setStatus('Pasted text from clipboard.')
-    terminal.focus()
+    focusTerminal()
   }
 
   function initializeUi() {
-    updateModeSelection()
-    updateMicButtonState()
+    if (!runtimeSupport.capture) {
+      setStatus('Microphone capture is not available in this Electron runtime.', 'error')
+    }
+
+    renderUi()
     renderMeterIdle()
-    restoreIdleStatus()
   }
 
-  function updateModeSelection() {
+  function renderUi() {
+    const viewModel = getMicViewModel(micState)
+    const modeDetail = getModeDetailText(viewModel)
+    const micDisabled =
+      !runtimeSupport.capture ||
+      isStartingRecording ||
+      micState.phase === MIC_PHASES.STOPPING ||
+      micState.phase === MIC_PHASES.TRANSCRIBING
+
+    controlPanel.dataset.mode = micState.mode
+    controlPanel.dataset.phase = micState.phase
+    controlPanel.dataset.autoStrategy = micState.autoStrategy
+    controlPanel.dataset.busy = String(isBusyMicPhase(micState.phase) || isStartingRecording)
+
     modeButtons.forEach((button) => {
-      button.dataset.selected = String(button.dataset.mode === micMode)
+      const isSelected = button.dataset.mode === micState.mode
+      const isAutoButton = button.dataset.mode === MIC_MODES.AUTO
+
+      button.dataset.selected = String(isSelected)
+      button.disabled =
+        !runtimeSupport.capture ||
+        isStartingRecording ||
+        viewModel.modeButtonsDisabled ||
+        (isAutoButton && !supportsAutoMode())
+      button.dataset.supported = String(!isAutoButton || supportsAutoMode())
+      button.title =
+        isAutoButton && !supportsAutoMode()
+          ? 'Auto mode needs live dictation or audio monitoring in this runtime.'
+          : ''
     })
+
+    speakerButton.disabled = isPreviewRequestPending
+    micButton.disabled = micDisabled
+    micButton.dataset.state = viewModel.buttonVisualState
+    micButton.setAttribute('aria-label', viewModel.buttonLabel)
+    micButton.setAttribute(
+      'aria-pressed',
+      String(
+        micState.phase === MIC_PHASES.RECORDING ||
+          (micState.mode === MIC_MODES.AUTO && micState.autoEnabled)
+      )
+    )
+
+    meterElement.dataset.active = String(Boolean(analyser && viewModel.shouldShowMeter))
+    modeDetailElement.textContent = modeDetail
+    modeDetailElement.dataset.tone =
+      micState.mode === MIC_MODES.AUTO && !runtimeSupport.liveDictation ? 'muted' : 'default'
+
+    renderStatus()
   }
 
-  function updateMicButtonState() {
-    let nextState = 'idle'
+  function renderStatus() {
+    const viewModel = getMicViewModel(micState)
+    const override = getActiveStatusOverride()
+    const shouldUseOverride =
+      Boolean(override) &&
+      (override.tone === 'error' || override.persistDuringBusy || !isBusyUiPhase())
+    const status = shouldUseOverride
+      ? override
+      : {
+          message: viewModel.statusText,
+          tone: 'default'
+        }
 
-    if (isTranscribing) {
-      nextState = 'transcribing'
-    } else if (isStartingRecording || isStoppingRecording || isRecording()) {
-      nextState = 'recording'
-    } else if (micMode === MIC_MODES.AUTO && autoListenEnabled) {
-      nextState = 'armed'
-    }
-
-    micButton.dataset.state = nextState
-    micButton.setAttribute('aria-label', getMicButtonLabel())
+    statusElement.textContent = status.message
+    statusElement.dataset.tone = status.tone
   }
 
-  function getMicButtonLabel() {
-    if (micMode === MIC_MODES.HOLD) {
-      return 'Hold to dictate'
+  function getActiveStatusOverride() {
+    if (!statusOverride) {
+      return null
     }
 
-    if (micMode === MIC_MODES.AUTO) {
-      return autoListenEnabled ? 'Turn off always-on listening' : 'Turn on always-on listening'
+    if (!statusOverride.sticky && statusOverride.expiresAt <= performance.now()) {
+      statusOverride = null
+      return null
     }
 
-    return isRecording() ? 'Stop dictation' : 'Start dictation'
+    return statusOverride
   }
 
-  function getIdleStatus() {
-    if (micMode === MIC_MODES.HOLD) {
-      return 'Hold mic to talk.'
+  function getModeDetailText(viewModel) {
+    if (!runtimeSupport.capture) {
+      return 'Mic capture is unavailable here, so dictation controls are disabled.'
     }
 
-    if (micMode === MIC_MODES.AUTO) {
-      return autoListenEnabled
-        ? autoModeStrategy === 'live'
-          ? 'Auto listening is on. Speak and text should appear as you talk.'
-          : 'Auto listening is on. It will capture speech automatically.'
-        : 'Click mic to arm always-on listening.'
+    if (micState.mode === MIC_MODES.AUTO && !supportsAutoMode()) {
+      return 'Always-on listening is unavailable because this runtime has neither live dictation nor audio monitoring.'
     }
 
-    return 'Click mic to talk. Press Enter to stop.'
-  }
-
-  function getRecordingStatus(source) {
-    if (source === MIC_MODES.AUTO) {
-      return 'Auto fallback capture is running...'
+    if (
+      micState.mode === MIC_MODES.AUTO &&
+      micState.autoStrategy === AUTO_STRATEGIES.LIVE &&
+      !runtimeSupport.meter
+    ) {
+      return 'Always listening is armed with live dictation only. Audio-level fallback is unavailable here.'
     }
 
-    if (micMode === MIC_MODES.TOGGLE) {
-      return 'Listening... press Enter or click mic to stop.'
-    }
-
-    return 'Recording...'
-  }
-
-  function restoreIdleStatus() {
-    if (statusElement.dataset.tone === 'error') {
-      return
-    }
-
-    if (isPlayingAudio) {
-      setStatus('Playing response...')
-      return
-    }
-
-    if (isTranscribing) {
-      setStatus('Transcribing...')
-      return
-    }
-
-    if (isRecording() || isStartingRecording || isStoppingRecording) {
-      setStatus(getRecordingStatus(currentCapture?.source || micMode))
-      return
-    }
-
-    setStatus(getIdleStatus())
+    return viewModel.modeDescription
   }
 
   function setMicMode(nextMode) {
-    if (!Object.values(MIC_MODES).includes(nextMode) || nextMode === micMode) {
+    if (
+      !Object.values(MIC_MODES).includes(nextMode) ||
+      nextMode === micState.mode ||
+      isStartingRecording
+    ) {
+      renderUi()
       return
     }
 
-    const leavingAutoMode = micMode === MIC_MODES.AUTO && autoListenEnabled
-    micMode = nextMode
+    if (nextMode === MIC_MODES.AUTO && !supportsAutoMode()) {
+      setStatus(
+        'Always-on listening is unavailable in this runtime.',
+        'default',
+        { durationMs: 3200 }
+      )
+      renderUi()
+      return
+    }
 
-    if (leavingAutoMode) {
-      autoListenEnabled = false
-      voiceCandidateSince = 0
+    if (micState.mode === MIC_MODES.AUTO && micState.autoEnabled && nextMode !== MIC_MODES.AUTO) {
+      disarmAutoRuntime({ keepTypedText: true })
+    }
 
-      if (isRecording()) {
-        stopRecording({ reason: 'mode-change' })
-      }
-    } else if (isRecording()) {
+    if (isRecording()) {
       stopRecording({ reason: 'mode-change' })
     }
 
     activePointerId = null
-    updateModeSelection()
-    updateMicButtonState()
-    restoreIdleStatus()
+    transitionMic({
+      type: 'SET_MODE',
+      mode: nextMode
+    })
+    clearStatus({ preserveErrors: false })
   }
 
   async function enableAutoListening() {
+    if (!supportsAutoMode()) {
+      setStatus('Always-on listening is unavailable in this runtime.')
+      return
+    }
+
+    clearStatus({ preserveErrors: false })
     await ensureMicrophoneReady()
-    autoListenEnabled = true
-    autoModeStrategy = SpeechRecognitionClass ? 'live' : 'capture'
-    voiceCandidateSince = 0
-    lastVoiceAt = 0
-    liveFallbackVoiceSince = 0
-    lastLiveResultAt = performance.now()
+    resetAutoTracking()
+    transitionMic({
+      type: 'AUTO_ARM'
+    })
+    transitionMic({
+      type: 'AUTO_STRATEGY_SET',
+      strategy: runtimeSupport.liveDictation ? AUTO_STRATEGIES.LIVE : AUTO_STRATEGIES.CAPTURE
+    })
 
     if (shouldUseLiveDictation()) {
       try {
@@ -588,31 +794,29 @@
         switchAutoModeToCapture('Live dictation did not start. Using auto capture fallback.')
       }
     }
-
-    updateMicButtonState()
-    setStatus(getIdleStatus())
   }
 
   function disableAutoListening() {
-    autoListenEnabled = false
-    autoModeStrategy = SpeechRecognitionClass ? 'live' : 'capture'
-    voiceCandidateSince = 0
-    lastVoiceAt = 0
-    liveFallbackVoiceSince = 0
-    lastLiveResultAt = 0
-    clearLiveRecognitionRestart()
-
-    if (speechRecognition || autoModeStrategy === 'live') {
-      stopLiveDictation({ keepTypedText: true })
-    }
+    disarmAutoRuntime({ keepTypedText: true })
+    resetAutoTracking()
+    transitionMic({
+      type: 'AUTO_DISARM'
+    })
 
     if (isRecording()) {
       stopRecording({ reason: 'auto-disabled' })
       return
     }
 
-    updateMicButtonState()
-    restoreIdleStatus()
+    clearStatus({ preserveErrors: false })
+  }
+
+  function disarmAutoRuntime({ keepTypedText = true } = {}) {
+    clearLiveRecognitionRestart()
+
+    if (speechRecognition || micState.autoStrategy === AUTO_STRATEGIES.LIVE) {
+      stopLiveDictation({ keepTypedText })
+    }
   }
 
   async function ensureMicrophoneReady() {
@@ -630,13 +834,7 @@
       })
     }
 
-    if (!audioContext) {
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext
-
-      if (!AudioContextClass) {
-        throw new Error('Audio monitoring is not available in this Electron runtime.')
-      }
-
+    if (!audioContext && AudioContextClass) {
       audioContext = new AudioContextClass()
       sourceNode = audioContext.createMediaStreamSource(mediaStream)
       analyser = audioContext.createAnalyser()
@@ -647,11 +845,11 @@
       timeDomainData = new Uint8Array(analyser.fftSize)
     }
 
-    if (audioContext.state === 'suspended') {
+    if (audioContext?.state === 'suspended') {
       await audioContext.resume()
     }
 
-    if (!meterAnimationFrame) {
+    if (analyser && !meterAnimationFrame) {
       meterAnimationFrame = window.requestAnimationFrame(tickMeter)
     }
   }
@@ -707,18 +905,26 @@
   }
 
   function processAutoListening(level) {
-    if (shouldUseLiveDictation()) {
-      maybeFallbackFromLiveDictation(level)
-      voiceCandidateSince = 0
-      return
-    }
-
-    if (micMode !== MIC_MODES.AUTO || !autoListenEnabled || isTranscribing || isStartingRecording) {
+    if (
+      micState.mode !== MIC_MODES.AUTO ||
+      !micState.autoEnabled ||
+      micState.phase === MIC_PHASES.TRANSCRIBING ||
+      isStartingRecording
+    ) {
       voiceCandidateSince = 0
       return
     }
 
     const now = performance.now()
+
+    if (shouldUseLiveDictation()) {
+      maybeFallbackFromLiveDictation(level, now)
+
+      if (hasRecentLiveDictationActivity(now)) {
+        voiceCandidateSince = 0
+        return
+      }
+    }
 
     if (isPlayingAudio || now < playbackQuietUntil) {
       voiceCandidateSince = 0
@@ -731,7 +937,7 @@
       }
 
       if (
-        !isStoppingRecording &&
+        !isStartingRecording &&
         now - lastVoiceAt >= AUTO_STOP_SILENCE_MS &&
         now - (currentCapture?.startedAt || now) >= MIN_RECORDING_MS
       ) {
@@ -741,6 +947,11 @@
         })
       }
 
+      return
+    }
+
+    if (!supportsAutoCapture()) {
+      voiceCandidateSince = 0
       return
     }
 
@@ -769,12 +980,21 @@
     return Boolean(mediaRecorder && mediaRecorder.state === 'recording')
   }
 
-  function supportsLiveDictation() {
-    return Boolean(SpeechRecognitionClass)
+  function supportsAutoMode() {
+    return runtimeSupport.capture && (runtimeSupport.liveDictation || runtimeSupport.meter)
+  }
+
+  function supportsAutoCapture() {
+    return Boolean(analyser && timeDomainData && frequencyData)
   }
 
   function shouldUseLiveDictation() {
-    return Boolean(supportsLiveDictation() && autoListenEnabled && micMode === MIC_MODES.AUTO && autoModeStrategy === 'live')
+    return Boolean(
+      runtimeSupport.liveDictation &&
+        micState.mode === MIC_MODES.AUTO &&
+        micState.autoEnabled &&
+        micState.autoStrategy === AUTO_STRATEGIES.LIVE
+    )
   }
 
   async function startLiveDictation() {
@@ -803,19 +1023,17 @@
       switchAutoModeToCapture(`Live dictation failed: ${event.error}. Using auto capture fallback.`)
     })
     recognition.addEventListener('end', () => {
-      const shouldRestart =
-        recognition === speechRecognition && shouldUseLiveDictation()
+      const shouldRestart = recognition === speechRecognition && shouldUseLiveDictation()
 
-      commitInterimDictationText()
+      commitVisibleInterimDictation()
 
       if (recognition === speechRecognition) {
         speechRecognition = null
       }
 
-      updateMicButtonState()
+      renderUi()
 
       if (!shouldRestart) {
-        restoreIdleStatus()
         return
       }
 
@@ -829,17 +1047,16 @@
     })
 
     speechRecognition = recognition
-    updateMicButtonState()
+    renderUi()
 
     try {
       recognition.start()
-      restoreIdleStatus()
     } catch (error) {
       if (speechRecognition === recognition) {
         speechRecognition = null
       }
 
-      updateMicButtonState()
+      renderUi()
       throw error
     }
   }
@@ -848,14 +1065,14 @@
     clearLiveRecognitionRestart()
 
     if (keepTypedText) {
-      commitInterimDictationText()
+      commitVisibleInterimDictation()
     } else {
-      clearInterimDictationText()
-      resetLiveDictationState()
+      clearVisibleInterimDictation()
+      dictationBuffer = createDictationBuffer()
     }
 
     if (!speechRecognition) {
-      updateMicButtonState()
+      renderUi()
       return
     }
 
@@ -868,97 +1085,61 @@
       // Chromium can throw if stop is called during teardown.
     }
 
-    updateMicButtonState()
+    renderUi()
   }
 
   function handleLiveDictationResult(event) {
-    if (!autoListenEnabled || micMode !== MIC_MODES.AUTO) {
+    if (!micState.autoEnabled || micState.mode !== MIC_MODES.AUTO) {
       return
     }
 
     lastLiveResultAt = performance.now()
     liveFallbackVoiceSince = 0
     let nextInterimText = ''
+    let nextBuffer = dictationBuffer
 
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       const result = event.results[index]
-      const transcript = normalizeTranscript(result[0]?.transcript)
+      const transcript = normalizeDictationText(result[0]?.transcript)
 
       if (!transcript) {
         continue
       }
 
       if (result.isFinal) {
-        clearInterimDictationText()
-        appendCommittedDictationText(transcript)
+        const cleared = clearInterimDictation(nextBuffer)
+
+        nextBuffer = cleared.buffer
+        writeAppTextToPty(cleared.eraseText)
+
+        const appended = appendCommittedDictation(nextBuffer, transcript)
+
+        nextBuffer = appended.buffer
+        writeAppTextToPty(appended.insertText)
       } else {
         nextInterimText = appendWords(nextInterimText, transcript)
       }
     }
 
-    replaceInterimDictationText(nextInterimText)
-    restoreIdleStatus()
+    const replaced = replaceInterimDictation(nextBuffer, nextInterimText)
+
+    dictationBuffer = replaced.buffer
+    writeAppTextToPty(replaced.eraseText)
+    writeAppTextToPty(replaced.insertText)
+    renderUi()
   }
 
-  function appendCommittedDictationText(text) {
-    const chunk = formatDictationChunk(text, {
-      needsLeadingSpace: Boolean(liveCommittedText)
-    })
+  function clearVisibleInterimDictation() {
+    const cleared = clearInterimDictation(dictationBuffer)
 
-    if (!chunk) {
-      return
-    }
-
-    writeAppTextToPty(chunk)
-    liveCommittedText += chunk
+    dictationBuffer = cleared.buffer
+    writeAppTextToPty(cleared.eraseText)
   }
 
-  function replaceInterimDictationText(nextText) {
-    const normalized = normalizeTranscript(nextText)
+  function commitVisibleInterimDictation() {
+    const committed = commitInterimDictation(dictationBuffer)
 
-    if (normalized === liveInterimText) {
-      return
-    }
-
-    clearInterimDictationText()
-
-    if (!normalized) {
-      return
-    }
-
-    const chunk = formatDictationChunk(normalized, {
-      needsLeadingSpace: Boolean(liveCommittedText)
-    })
-
-    if (!chunk) {
-      return
-    }
-
-    writeAppTextToPty(chunk)
-    liveInterimText = chunk
-  }
-
-  function clearInterimDictationText() {
-    if (!liveInterimText) {
-      return
-    }
-
-    writeAppTextToPty(buildBackspaceSequence(liveInterimText.length))
-    liveInterimText = ''
-  }
-
-  function commitInterimDictationText() {
-    if (!liveInterimText) {
-      return
-    }
-
-    liveCommittedText += liveInterimText
-    liveInterimText = ''
-  }
-
-  function resetLiveDictationState() {
-    liveCommittedText = ''
-    liveInterimText = ''
+    dictationBuffer = committed.buffer
   }
 
   function clearLiveRecognitionRestart() {
@@ -970,45 +1151,36 @@
     liveRecognitionRestartTimer = 0
   }
 
-  function writeAppTextToPty(text) {
-    if (!text) {
-      return
-    }
-
-    api.writeToPty(text)
-  }
-
   function handleManualTerminalInput(data) {
-    if (!data || !autoListenEnabled || micMode !== MIC_MODES.AUTO) {
+    if (micState.phase === MIC_PHASES.INJECTED && data) {
+      transitionMic({
+        type: 'CLEAR_INJECTED'
+      })
+    }
+
+    if (!data || !micState.autoEnabled || micState.mode !== MIC_MODES.AUTO) {
       return
     }
 
-    if (data.includes('\r') || data.includes('\n')) {
-      resetLiveDictationState()
-      return
-    }
+    const consumed = consumeTerminalInput(dictationBuffer, data)
 
-    if (data.includes('\u0003')) {
-      clearInterimDictationText()
-      resetLiveDictationState()
-    }
+    dictationBuffer = consumed.buffer
+    writeAppTextToPty(consumed.eraseText)
   }
 
   function shouldShowLiveMeter() {
-    if (isRecording() || isStartingRecording || isStoppingRecording || isTranscribing) {
-      return true
+    if (!analyser) {
+      return false
     }
 
-    return micMode === MIC_MODES.AUTO && autoListenEnabled
+    return getMicViewModel(micState).shouldShowMeter
   }
 
-  function maybeFallbackFromLiveDictation(level) {
+  function maybeFallbackFromLiveDictation(level, now = performance.now()) {
     if (!shouldUseLiveDictation()) {
       liveFallbackVoiceSince = 0
       return
     }
-
-    const now = performance.now()
 
     if (level < AUTO_START_THRESHOLD) {
       liveFallbackVoiceSince = 0
@@ -1023,22 +1195,29 @@
       return
     }
 
-    if (now - lastLiveResultAt < LIVE_DICTATION_FALLBACK_MS) {
+    if (hasRecentLiveDictationActivity(now)) {
       return
     }
 
     switchAutoModeToCapture('Live dictation was not receiving speech. Using auto capture fallback.')
   }
 
+  function hasRecentLiveDictationActivity(now = performance.now()) {
+    if (dictationBuffer.interimValue) {
+      return true
+    }
+
+    return Boolean(lastLiveResultAt && now - lastLiveResultAt < LIVE_RESULT_GRACE_MS)
+  }
+
   function switchAutoModeToCapture(message) {
-    if (autoModeStrategy === 'capture') {
+    if (micState.autoStrategy === AUTO_STRATEGIES.CAPTURE) {
       if (message) {
         setStatus(message)
       }
       return
     }
 
-    autoModeStrategy = 'capture'
     liveFallbackVoiceSince = 0
     clearLiveRecognitionRestart()
 
@@ -1046,37 +1225,64 @@
       stopLiveDictation({ keepTypedText: true })
     }
 
-    updateMicButtonState()
-    setStatus(message || getIdleStatus())
+    transitionMic({
+      type: 'AUTO_STRATEGY_SET',
+      strategy: AUTO_STRATEGIES.CAPTURE
+    })
+    setStatus(message || getMicViewModel(micState).statusText, 'default', {
+      durationMs: 3200,
+      persistDuringBusy: true
+    })
   }
 
-  function formatDictationChunk(text, { needsLeadingSpace = false } = {}) {
-    const normalized = normalizeTranscript(text)
-
-    if (!normalized) {
-      return ''
-    }
-
-    return `${needsLeadingSpace ? ' ' : ''}${normalized}`
+  function transitionMic(event) {
+    micState = transitionMicState(micState, event)
+    renderUi()
   }
 
-  function appendWords(base, addition) {
-    const normalizedBase = normalizeTranscript(base)
-    const normalizedAddition = normalizeTranscript(addition)
-
-    if (!normalizedAddition) {
-      return normalizedBase
+  function releaseMicPointerCapture(pointerId = activePointerId) {
+    if (pointerId === null || !micButton.hasPointerCapture(pointerId)) {
+      return
     }
 
-    if (!normalizedBase) {
-      return normalizedAddition
+    try {
+      micButton.releasePointerCapture(pointerId)
+    } catch (_error) {
+      // Chromium can throw when capture is already gone.
     }
-
-    return `${normalizedBase} ${normalizedAddition}`
   }
 
-  function buildBackspaceSequence(length) {
-    return '\u007f'.repeat(length)
+  function resetAutoTracking() {
+    voiceCandidateSince = 0
+    lastVoiceAt = 0
+    liveFallbackVoiceSince = 0
+    lastLiveResultAt = 0
+  }
+
+  function isAutoArmed() {
+    return micState.mode === MIC_MODES.AUTO && micState.autoEnabled
+  }
+
+  function isBusyMicPhase(phase) {
+    return BUSY_PHASES.has(phase)
+  }
+
+  function isBusyUiPhase() {
+    return isStartingRecording || isBusyMicPhase(micState.phase) || micState.phase === MIC_PHASES.PLAYING
+  }
+
+  function writeAppTextToPty(text) {
+    if (!text) {
+      return
+    }
+
+    api.writeToPty(text)
+  }
+
+  function focusTerminal() {
+    window.requestAnimationFrame(() => {
+      terminal.focus()
+    })
   }
 
   function getSignalLevel(samples) {
@@ -1103,19 +1309,12 @@
     ]
 
     for (const mimeType of mimeTypes) {
-      if (MediaRecorder.isTypeSupported(mimeType)) {
+      if (window.MediaRecorder?.isTypeSupported?.(mimeType)) {
         return { mimeType }
       }
     }
 
     return undefined
-  }
-
-  function normalizeTranscript(text) {
-    return String(text || '')
-      .replace(/[\r\n]+/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim()
   }
 
   function normalizePastedText(text) {
