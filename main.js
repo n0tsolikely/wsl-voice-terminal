@@ -1,12 +1,14 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
-const { spawn } = require('node:child_process')
-const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
-const os = require('node:os')
 const pty = require('node-pty')
 const { CodexSpeechInterceptor } = require('./lib/codex-speech-interceptor')
-const { TTS_PROVIDERS, resolveTtsProvider } = require('./lib/tts-provider-selection')
+const { LocalTtsClient } = require('./lib/local-tts-client')
+const { LocalWhisperClient } = require('./lib/local-whisper-client')
+const { OpenAiAudioClient } = require('./lib/openai-audio-client')
+const { runCommand } = require('./lib/run-command')
+const { TTS_PROVIDERS } = require('./lib/tts-provider-selection')
+const { TtsService } = require('./lib/tts-service')
 
 loadDotEnv(path.join(__dirname, '.env'))
 
@@ -21,351 +23,6 @@ const LOCAL_WHISPER_MODEL = process.env.LOCAL_WHISPER_MODEL || 'base.en'
 const LOCAL_WHISPER_DEVICE = process.env.LOCAL_WHISPER_DEVICE || 'cpu'
 const LOCAL_WHISPER_COMPUTE_TYPE = process.env.LOCAL_WHISPER_COMPUTE_TYPE || 'int8'
 const LOCAL_WHISPER_LANGUAGE = process.env.LOCAL_WHISPER_LANGUAGE || 'en'
-const MAX_TTS_CHARS = 4000
-
-class OpenAIClient {
-  hasApiKey() {
-    return Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim())
-  }
-
-  get apiKey() {
-    const apiKey = process.env.OPENAI_API_KEY
-
-    if (!apiKey) {
-      throw new Error('OPENAI_API_KEY is missing.')
-    }
-
-    return apiKey
-  }
-
-  async transcribeAudio(audioBuffer, mimeType) {
-    const fileBuffer = Buffer.isBuffer(audioBuffer) ? audioBuffer : Buffer.from(audioBuffer)
-    const fileBlob = new Blob([fileBuffer], { type: mimeType || 'audio/webm' })
-    const form = new FormData()
-
-    form.set('file', fileBlob, this.buildFilename(mimeType))
-    form.set('model', TRANSCRIPTION_MODEL)
-    form.set('response_format', 'json')
-
-    const response = await fetch(`${OPENAI_API_BASE}/audio/transcriptions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`
-      },
-      body: form
-    })
-
-    if (!response.ok) {
-      throw new Error(`Whisper request failed with ${response.status}: ${await response.text()}`)
-    }
-
-    const payload = await response.json()
-
-    return typeof payload.text === 'string' ? payload.text.trim() : ''
-  }
-
-  async synthesizeSpeech(text) {
-    const speechInput = text.trim().slice(0, MAX_TTS_CHARS)
-
-    if (!speechInput) {
-      return null
-    }
-
-    const response = await fetch(`${OPENAI_API_BASE}/audio/speech`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: TTS_MODEL,
-        voice: TTS_VOICE,
-        response_format: TTS_FORMAT,
-        input: speechInput
-      })
-    })
-
-    if (!response.ok) {
-      throw new Error(`TTS request failed with ${response.status}: ${await response.text()}`)
-    }
-
-    return Buffer.from(await response.arrayBuffer())
-  }
-
-  buildFilename(mimeType) {
-    const extensionMap = {
-      'audio/mp4': 'm4a',
-      'audio/mpeg': 'mp3',
-      'audio/ogg': 'ogg',
-      'audio/wav': 'wav',
-      'audio/webm': 'webm'
-    }
-
-    return `recording.${extensionMap[mimeType] || 'webm'}`
-  }
-}
-
-class LocalTtsClient {
-  get scriptPath() {
-    return path.join(__dirname, 'scripts', 'local_tts_to_wave.ps1')
-  }
-
-  isAvailable() {
-    return process.platform === 'win32'
-  }
-
-  async synthesizeSpeech(text) {
-    const speechInput = text.trim().slice(0, MAX_TTS_CHARS)
-
-    if (!speechInput) {
-      return null
-    }
-
-    if (!this.isAvailable()) {
-      throw new Error('Local Windows TTS is only available when this app is running on Windows.')
-    }
-
-    const tempToken = crypto.randomUUID()
-    const textPath = path.join(os.tmpdir(), `wsl-voice-terminal-${tempToken}.txt`)
-    const outPath = path.join(os.tmpdir(), `wsl-voice-terminal-${tempToken}.wav`)
-
-    await fs.promises.writeFile(textPath, speechInput, 'utf8')
-
-    try {
-      const args = [
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        this.scriptPath,
-        '-TextPath',
-        textPath,
-        '-OutPath',
-        outPath
-      ]
-
-      if (LOCAL_TTS_VOICE.trim()) {
-        args.push('-Voice', LOCAL_TTS_VOICE.trim())
-      }
-
-      await runCommand('powershell.exe', args, {
-        cwd: __dirname
-      })
-
-      return fs.promises.readFile(outPath)
-    } catch (error) {
-      throw new Error(`Local Windows TTS failed: ${error.message}`)
-    } finally {
-      fs.promises.unlink(textPath).catch(() => {})
-      fs.promises.unlink(outPath).catch(() => {})
-    }
-  }
-}
-
-class TtsService {
-  constructor({ openAIClient, localTtsClient }) {
-    this.openAIClient = openAIClient
-    this.localTtsClient = localTtsClient
-  }
-
-  async synthesizeSpeech(text) {
-    const provider = resolveTtsProvider({
-      requestedProvider: TTS_PROVIDER,
-      hasOpenAiKey: this.openAIClient.hasApiKey(),
-      hasLocalTts: this.localTtsClient.isAvailable()
-    })
-
-    if (provider === TTS_PROVIDERS.OPENAI) {
-      const audioBuffer = await this.openAIClient.synthesizeSpeech(text)
-
-      return audioBuffer
-        ? {
-            audioBuffer,
-            mimeType: 'audio/mpeg',
-            provider
-          }
-        : null
-    }
-
-    const audioBuffer = await this.localTtsClient.synthesizeSpeech(text)
-
-    return audioBuffer
-      ? {
-          audioBuffer,
-          mimeType: 'audio/wav',
-          provider
-        }
-      : null
-  }
-}
-
-class LocalWhisperClient {
-  constructor() {
-    this.runtimePromise = null
-  }
-
-  get requirementsPath() {
-    return path.join(__dirname, 'requirements.local-whisper.txt')
-  }
-
-  get scriptPath() {
-    return path.join(__dirname, 'scripts', 'local_whisper_transcribe.py')
-  }
-
-  get venvDir() {
-    return path.join(__dirname, '.local-whisper-venv')
-  }
-
-  get venvPythonPath() {
-    return process.platform === 'win32'
-      ? path.join(this.venvDir, 'Scripts', 'python.exe')
-      : path.join(this.venvDir, 'bin', 'python')
-  }
-
-  async transcribeAudio(audioBuffer, mimeType, onStatus = () => {}) {
-    const fileBuffer = Buffer.isBuffer(audioBuffer) ? audioBuffer : Buffer.from(audioBuffer)
-    const tempPath = path.join(
-      os.tmpdir(),
-      `wsl-voice-terminal-${crypto.randomUUID()}.${this.buildExtension(mimeType)}`
-    )
-
-    await fs.promises.writeFile(tempPath, fileBuffer)
-
-    try {
-      await this.ensureRuntime(onStatus)
-      onStatus(`Running local transcription with ${LOCAL_WHISPER_MODEL}...`)
-
-      const stdout = await this.runVenvPython([
-        this.scriptPath,
-        '--audio-path',
-        tempPath,
-        '--model',
-        LOCAL_WHISPER_MODEL,
-        '--device',
-        LOCAL_WHISPER_DEVICE,
-        '--compute-type',
-        LOCAL_WHISPER_COMPUTE_TYPE,
-        '--language',
-        LOCAL_WHISPER_LANGUAGE
-      ])
-      const payload = JSON.parse(stdout || '{}')
-
-      return typeof payload.text === 'string' ? payload.text.trim() : ''
-    } catch (error) {
-      throw new Error(`Local faster-whisper transcription failed: ${error.message}`)
-    } finally {
-      fs.promises.unlink(tempPath).catch(() => {})
-    }
-  }
-
-  async ensureRuntime(onStatus) {
-    if (!this.runtimePromise) {
-      this.runtimePromise = this.setupRuntime(onStatus).catch((error) => {
-        this.runtimePromise = null
-        throw error
-      })
-    }
-
-    return this.runtimePromise
-  }
-
-  async setupRuntime(onStatus) {
-    if (!fs.existsSync(this.venvPythonPath)) {
-      onStatus('Setting up local faster-whisper runtime...')
-      const launcher = await this.resolvePythonLauncher()
-
-      await runCommand(launcher.command, [...launcher.args, '-m', 'venv', this.venvDir], {
-        cwd: __dirname
-      })
-    }
-
-    if (await this.hasInstalledRuntime()) {
-      return
-    }
-
-    onStatus('Installing local faster-whisper fallback. First run can take a minute...')
-    await this.runVenvPython([
-      '-m',
-      'pip',
-      'install',
-      '--disable-pip-version-check',
-      '-r',
-      this.requirementsPath
-    ])
-  }
-
-  async resolvePythonLauncher() {
-    const candidates = []
-
-    if (process.env.LOCAL_WHISPER_PYTHON) {
-      candidates.push({
-        command: process.env.LOCAL_WHISPER_PYTHON,
-        args: []
-      })
-    }
-
-    if (process.platform === 'win32') {
-      candidates.push(
-        { command: 'py', args: ['-3'] },
-        { command: 'python', args: [] },
-        { command: 'python3', args: [] }
-      )
-    } else {
-      candidates.push(
-        { command: 'python3', args: [] },
-        { command: 'python', args: [] }
-      )
-    }
-
-    for (const candidate of candidates) {
-      try {
-        await runCommand(candidate.command, [...candidate.args, '--version'], {
-          cwd: __dirname
-        })
-        return candidate
-      } catch (_error) {
-        // Try the next available launcher.
-      }
-    }
-
-    throw new Error('Python 3.9+ is required for the local faster-whisper fallback.')
-  }
-
-  async hasInstalledRuntime() {
-    if (!fs.existsSync(this.venvPythonPath)) {
-      return false
-    }
-
-    try {
-      await this.runVenvPython([
-        '-c',
-        'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("faster_whisper") else 1)'
-      ])
-      return true
-    } catch (_error) {
-      return false
-    }
-  }
-
-  async runVenvPython(args) {
-    return runCommand(this.venvPythonPath, args, {
-      cwd: __dirname
-    })
-  }
-
-  buildExtension(mimeType) {
-    const extensionMap = {
-      'audio/mp4': 'm4a',
-      'audio/mpeg': 'mp3',
-      'audio/ogg': 'ogg',
-      'audio/wav': 'wav',
-      'audio/webm': 'webm'
-    }
-
-    return extensionMap[mimeType] || 'webm'
-  }
-}
 
 class TerminalSession {
   constructor(window, ttsService) {
@@ -490,10 +147,32 @@ class TerminalSession {
 
 let mainWindow = null
 let terminalSession = null
-const openAIClient = new OpenAIClient()
-const localTtsClient = new LocalTtsClient()
-const ttsService = new TtsService({ openAIClient, localTtsClient })
-const localWhisperClient = new LocalWhisperClient()
+const openAIClient = new OpenAiAudioClient({
+  apiBase: OPENAI_API_BASE,
+  apiKey: process.env.OPENAI_API_KEY || '',
+  transcriptionModel: TRANSCRIPTION_MODEL,
+  ttsModel: TTS_MODEL,
+  ttsVoice: TTS_VOICE,
+  ttsFormat: TTS_FORMAT
+})
+const localTtsClient = new LocalTtsClient({
+  baseDir: __dirname,
+  runCommand,
+  voice: LOCAL_TTS_VOICE
+})
+const ttsService = new TtsService({
+  requestedProvider: TTS_PROVIDER,
+  openAiAudioClient: openAIClient,
+  localTtsClient
+})
+const localWhisperClient = new LocalWhisperClient({
+  baseDir: __dirname,
+  runCommand,
+  model: LOCAL_WHISPER_MODEL,
+  device: LOCAL_WHISPER_DEVICE,
+  computeType: LOCAL_WHISPER_COMPUTE_TYPE,
+  language: LOCAL_WHISPER_LANGUAGE
+})
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -615,42 +294,4 @@ function loadDotEnv(dotEnvPath) {
 
     process.env[key] = value
   }
-}
-
-function runCommand(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd || process.cwd(),
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: 'utf-8'
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true
-    })
-    let stdout = ''
-    let stderr = ''
-
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString()
-    })
-
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString()
-    })
-
-    child.on('error', (error) => {
-      reject(error)
-    })
-
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve(stdout.trim())
-        return
-      }
-
-      const detail = stderr.trim() || stdout.trim() || `exit code ${code}`
-      reject(new Error(detail))
-    })
-  })
 }
