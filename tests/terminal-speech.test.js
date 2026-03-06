@@ -138,6 +138,22 @@ test('extractSpeechText recovers reply text when a Codex footer redraw is glued 
   )
 })
 
+test('extractSpeechText recovers reply text when a Codex footer redraw is glued to the next sentence with spaces', () => {
+  const input = [
+    'Yes. Your last message came through clearly.',
+    '',
+    'gpt-5.4 xhigh · 100% left · /mnt/c/Users/peter  Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand.',
+    '› Use /skills to list available skills'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Yes. Your last message came through clearly. Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand.'
+  )
+})
+
 test('extractSpeechText keeps Claude reply text but drops Claude tool chatter and shortcuts chrome', () => {
   const input = [
     '● Read 1 file (ctrl+o to expand)',

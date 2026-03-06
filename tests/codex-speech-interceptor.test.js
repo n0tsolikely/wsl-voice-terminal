@@ -136,6 +136,27 @@ test('does not finalize Codex prompt placeholder text as a reply before the real
   ])
 })
 
+test('finalizes a continued Codex reply when the footer redraw is glued to the follow-on sentence', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Use /skills to list available skills\n')
+  interceptor.observeInput('hello\r')
+  interceptor.observeOutput(
+    '• Yes. Your last message came through clearly.\n› Use /skills to list available skills\n  gpt-5.4 xhigh · 100% left · /mnt/c/Users/peter'
+  )
+  interceptor.observeOutput(
+    '  Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand.'
+  )
+
+  assert.equal(
+    interceptor.flush(),
+    'Yes. Your last message came through clearly. Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand.'
+  )
+  assert.deepEqual(emitted, [
+    'Yes. Your last message came through clearly. Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand.'
+  ])
+})
+
 test('does not emit duplicates when flushed repeatedly after completion', () => {
   const { interceptor, emitted } = createInterceptor()
 
