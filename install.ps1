@@ -59,7 +59,8 @@ function Invoke-Checked {
     [string]$FilePath,
     [string[]]$Arguments = @(),
     [string]$WorkingDirectory = (Get-Location).Path,
-    [switch]$IgnoreExitCode
+    [switch]$IgnoreExitCode,
+    [switch]$PassThruExitCode
   )
 
   Push-Location $WorkingDirectory
@@ -74,7 +75,9 @@ function Invoke-Checked {
     throw ("Command failed with exit code {0}: {1} {2}" -f $exitCode, $FilePath, ($Arguments -join ' '))
   }
 
-  return $exitCode
+  if ($PassThruExitCode) {
+    return $exitCode
+  }
 }
 
 function Test-WslVoiceTerminalRepo([string]$Path) {
@@ -178,6 +181,40 @@ function Get-FirstStringValue([object]$Value) {
     return $null
   }
   return $asString.Trim()
+}
+
+function Get-NormalizedPathString {
+  param(
+    [object]$Value,
+    [switch]$RequireExisting
+  )
+
+  $items = if ($Value -is [System.Array]) { $Value } else { @($Value) }
+  $pathLikeFallback = $null
+
+  foreach ($item in $items) {
+    $candidate = Get-FirstStringValue -Value $item
+    if (-not $candidate) {
+      continue
+    }
+    if ($candidate -match '^\d+$') {
+      continue
+    }
+
+    if (Test-Path $candidate) {
+      return $candidate
+    }
+
+    if (-not $pathLikeFallback -and $candidate -match '^[A-Za-z]:\\|^\\\\|^/') {
+      $pathLikeFallback = $candidate
+    }
+  }
+
+  if ($RequireExisting) {
+    return $null
+  }
+
+  return $pathLikeFallback
 }
 
 function New-VsCppState {
@@ -400,7 +437,7 @@ function Test-Python311 {
 
   if ($pyPath) {
     try {
-      $exitCode = Invoke-Checked -FilePath $pyPath -Arguments @('-3.11', '--version') -IgnoreExitCode
+      $exitCode = Invoke-Checked -FilePath $pyPath -Arguments @('-3.11', '--version') -IgnoreExitCode -PassThruExitCode
       if ($exitCode -eq 0) {
         return $true
       }
@@ -482,7 +519,15 @@ function Ensure-WingetPackage {
 }
 
 function Resolve-RepoDir([string]$WingetPath) {
-  $currentDir = (Get-Location).Path
+  $currentDir = Get-NormalizedPathString -Value (Get-Location).Path
+  if (-not $currentDir) {
+    Stop-Install 'Current working directory path could not be resolved.'
+  }
+
+  $stableRepoDir = Get-NormalizedPathString -Value $StableRepoDir
+  if (-not $stableRepoDir) {
+    Stop-Install 'Stable repo path could not be resolved.'
+  }
 
   if (-not $PreferStableRepo -and (Test-WslVoiceTerminalRepo $currentDir)) {
     Write-Step 'Checking current working directory'
@@ -491,42 +536,51 @@ function Resolve-RepoDir([string]$WingetPath) {
   }
 
   if ($PreferStableRepo) {
-    Write-Step "PreferStableRepo enabled. Using stable repo path at $StableRepoDir"
+    Write-Step "PreferStableRepo enabled. Using stable repo path at $stableRepoDir"
   }
 
-  Write-Step "Preparing repo at $StableRepoDir"
+  Write-Step "Preparing repo at $stableRepoDir"
 
-  if (-not (Test-Path $StableRepoDir)) {
-    Invoke-Checked -FilePath 'git' -Arguments @('clone', $ExpectedRepoUrl, $StableRepoDir)
-    Write-Pass "Cloned repo to $StableRepoDir"
-    return $StableRepoDir
+  if (-not (Test-Path $stableRepoDir)) {
+    $null = Invoke-Checked -FilePath 'git' -Arguments @('clone', $ExpectedRepoUrl, $stableRepoDir)
+    $resolvedRepoDir = Get-NormalizedPathString -Value $stableRepoDir -RequireExisting
+    if (-not $resolvedRepoDir) {
+      Stop-Install 'Repo directory resolution returned an invalid path. Installer output leaked into the path state.'
+    }
+    Write-Pass "Cloned repo to $resolvedRepoDir"
+    return $resolvedRepoDir
   }
 
-  if (-not (Test-Path (Join-Path $StableRepoDir '.git'))) {
-    Stop-Install "$StableRepoDir already exists but is not a git clone. Remove or rename that folder, or run install.ps1 from inside your existing repo."
+  if (-not (Test-Path (Join-Path $stableRepoDir '.git'))) {
+    Stop-Install "$stableRepoDir already exists but is not a git clone. Remove or rename that folder, or run install.ps1 from inside your existing repo."
   }
 
-  $originUrl = (& git -C $StableRepoDir remote get-url origin 2>$null).Trim()
+  $originUrl = (& git -C $stableRepoDir remote get-url origin 2>$null).Trim()
   if (-not $originUrl) {
-    Stop-Install "The repo at $StableRepoDir has no origin remote. Fix the repo manually or remove the folder and rerun install.ps1."
+    Stop-Install "The repo at $stableRepoDir has no origin remote. Fix the repo manually or remove the folder and rerun install.ps1."
   }
 
   if ($originUrl -notmatch 'n0tsolikely/wsl-voice-terminal(?:\.git)?$') {
-    Stop-Install "The repo at $StableRepoDir points to $originUrl, not $ExpectedRepoUrl. Remove or fix that repo before rerunning install.ps1."
+    Stop-Install "The repo at $stableRepoDir points to $originUrl, not $ExpectedRepoUrl. Remove or fix that repo before rerunning install.ps1."
   }
 
-  $gitStatus = (& git -C $StableRepoDir status --porcelain)
+  $gitStatus = (& git -C $stableRepoDir status --porcelain)
   if ($gitStatus) {
-    Write-Warn "The repo at $StableRepoDir has local changes. Skipping git pull to avoid overwriting your work."
-    return $StableRepoDir
+    Write-Warn "The repo at $stableRepoDir has local changes. Skipping git pull to avoid overwriting your work."
+    return $stableRepoDir
   }
 
-  Invoke-Checked -FilePath 'git' -Arguments @('-C', $StableRepoDir, 'fetch', 'origin')
-  Invoke-Checked -FilePath 'git' -Arguments @('-C', $StableRepoDir, 'checkout', 'main')
-  Invoke-Checked -FilePath 'git' -Arguments @('-C', $StableRepoDir, 'pull', '--ff-only', 'origin', 'main')
-  Write-Pass "Repo is up to date at $StableRepoDir"
+  $null = Invoke-Checked -FilePath 'git' -Arguments @('-C', $stableRepoDir, 'fetch', 'origin')
+  $null = Invoke-Checked -FilePath 'git' -Arguments @('-C', $stableRepoDir, 'checkout', 'main')
+  $null = Invoke-Checked -FilePath 'git' -Arguments @('-C', $stableRepoDir, 'pull', '--ff-only', 'origin', 'main')
+  Write-Pass "Repo is up to date at $stableRepoDir"
 
-  return $StableRepoDir
+  $resolvedRepoDir = Get-NormalizedPathString -Value $stableRepoDir -RequireExisting
+  if (-not $resolvedRepoDir) {
+    Stop-Install 'Repo directory resolution returned an invalid path. Installer output leaked into the path state.'
+  }
+
+  return $resolvedRepoDir
 }
 
 function Ensure-EnvFile([string]$RepoDir) {
@@ -556,7 +610,7 @@ function Get-PythonCommand {
 
   if ($pyPath) {
     try {
-      $exitCode = Invoke-Checked -FilePath $pyPath -Arguments @('-3.11', '--version') -IgnoreExitCode
+      $exitCode = Invoke-Checked -FilePath $pyPath -Arguments @('-3.11', '--version') -IgnoreExitCode -PassThruExitCode
       if ($exitCode -eq 0) {
         return @{
           FilePath = $pyPath
@@ -881,6 +935,10 @@ Ensure-WingetPackage -Name 'Python 3.11' -WingetId 'Python.Python.3.11' -TestScr
 
 $wslReady = Check-Wsl
 $repoDir = Resolve-RepoDir -WingetPath $wingetPath
+$repoDir = Get-NormalizedPathString -Value $repoDir -RequireExisting
+if (-not $repoDir) {
+  Stop-Install 'Repo directory resolution returned an invalid path. Installer output leaked into the path state.'
+}
 
 Ensure-EnvFile -RepoDir $repoDir
 
