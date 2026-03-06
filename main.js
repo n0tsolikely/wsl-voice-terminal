@@ -4,7 +4,7 @@ const path = require('node:path')
 const pty = require('node-pty')
 const { LocalTtsClient } = require('./lib/local-tts-client')
 const { LocalWhisperClient } = require('./lib/local-whisper-client')
-const { OpenAiAudioClient } = require('./lib/openai-audio-client')
+const { OpenAiAudioClient, isInvalidApiKeyError } = require('./lib/openai-audio-client')
 const { RuntimeLogger } = require('./lib/runtime-logger')
 const { runCommand } = require('./lib/run-command')
 const { TerminalSession } = require('./lib/terminal-session')
@@ -27,6 +27,7 @@ const LOCAL_WHISPER_LANGUAGE = process.env.LOCAL_WHISPER_LANGUAGE || 'en'
 
 let mainWindow = null
 let terminalSession = null
+const statusNoticeKeys = new Set()
 const runtimeLogger = new RuntimeLogger({
   baseDir: __dirname
 })
@@ -89,6 +90,10 @@ function createWindow() {
     })
   })
   mainWindow.loadFile(path.join(__dirname, 'index.html'))
+  mainWindow.webContents.once('did-finish-load', () => {
+    announceInitialSpeechMode()
+    warmLocalWhisperRuntime()
+  })
   windowLogger.log('window.created', {
     width: 1440,
     height: 900
@@ -145,41 +150,43 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('stt:transcribe', async (_event, payload) => {
-    const provider = openAIClient.hasApiKey() ? 'openai' : 'local-whisper'
+    const requestedProvider = openAIClient.hasApiKey() ? 'openai' : 'local-whisper'
 
     runtimeLogger.log('stt.request', {
-      provider,
+      provider: requestedProvider,
+      apiKeyState: openAIClient.getApiKeyState().reason,
       mimeType: payload.mimeType || ''
     })
 
-    if (openAIClient.hasApiKey()) {
+    try {
+      if (!openAIClient.hasApiKey()) {
+        return await transcribeWithLocalWhisper(payload, openAIClient.getApiKeyState().reason)
+      }
+
       const transcript = await openAIClient.transcribeAudio(payload.audioBuffer, payload.mimeType)
 
       runtimeLogger.log('stt.success', {
-        provider,
+        provider: 'openai',
         text: transcript
       })
       return transcript
-    }
-
-    const transcript = await localWhisperClient.transcribeAudio(
-      payload.audioBuffer,
-      payload.mimeType,
-      (message) => {
-        runtimeLogger.log('stt.status', {
-          provider,
-          message
+    } catch (error) {
+      if (!isInvalidApiKeyError(error)) {
+        runtimeLogger.log('stt.error', {
+          provider: requestedProvider,
+          message: error instanceof Error ? error.message : String(error)
         })
-        terminalSession?.send('app:status', { message })
+        throw error
       }
-    )
 
-    runtimeLogger.log('stt.success', {
-      provider,
-      text: transcript
-    })
+      runtimeLogger.log('stt.fallback', {
+        from: 'openai',
+        to: 'local-whisper',
+        message: error instanceof Error ? error.message : String(error)
+      })
 
-    return transcript
+      return transcribeWithLocalWhisper(payload, openAIClient.getApiKeyState().reason)
+    }
   })
 
   ipcMain.handle('speech:preview', async (_event, payload) => {
@@ -286,6 +293,86 @@ function configureMediaPermissions(electronSession) {
       callback(allowed)
     }
   )
+}
+
+function announceInitialSpeechMode() {
+  const apiKeyState = openAIClient.getApiKeyState()
+
+  if (apiKeyState.reason === 'missing' || apiKeyState.reason === 'placeholder') {
+    sendStatusOnce(`stt.local_only.${apiKeyState.reason}`, getLocalOnlyMessage(apiKeyState.reason))
+  }
+}
+
+function sendStatus(message) {
+  if (!message) {
+    return
+  }
+
+  terminalSession?.send('app:status', { message })
+}
+
+function sendStatusOnce(key, message) {
+  if (!key || !message || statusNoticeKeys.has(key)) {
+    return
+  }
+
+  statusNoticeKeys.add(key)
+  runtimeLogger.log('app.status', {
+    key,
+    message
+  })
+  sendStatus(message)
+}
+
+function forwardLocalWhisperStatus(message) {
+  runtimeLogger.log('stt.status', {
+    provider: 'local-whisper',
+    message
+  })
+  sendStatus(message)
+}
+
+function warmLocalWhisperRuntime() {
+  localWhisperClient.prepareRuntime((message) => {
+    forwardLocalWhisperStatus(message)
+  }).catch((error) => {
+    runtimeLogger.log('stt.runtime_setup_failed', {
+      provider: 'local-whisper',
+      message: error instanceof Error ? error.message : String(error)
+    })
+  })
+}
+
+async function transcribeWithLocalWhisper(payload, fallbackReason = '') {
+  const reason = fallbackReason || openAIClient.getApiKeyState().reason
+
+  if (reason && reason !== 'configured') {
+    sendStatusOnce(`stt.local_only.${reason}`, getLocalOnlyMessage(reason))
+  }
+
+  const transcript = await localWhisperClient.transcribeAudio(
+    payload.audioBuffer,
+    payload.mimeType,
+    (message) => {
+      forwardLocalWhisperStatus(message)
+    }
+  )
+
+  runtimeLogger.log('stt.success', {
+    provider: 'local-whisper',
+    fallbackReason: reason,
+    text: transcript
+  })
+
+  return transcript
+}
+
+function getLocalOnlyMessage(reason) {
+  if (reason === 'auth-failed') {
+    return 'OpenAI API key was rejected. Using local Whisper for this session.'
+  }
+
+  return 'No valid OpenAI API key found. Using local Whisper.'
 }
 
 function isAudioMediaPermission(permission, details = {}) {

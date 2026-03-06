@@ -9,6 +9,8 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "doctor": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\install.ps1 -DoctorOnly -NoLaunch",
+    "install:local-whisper": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\install.ps1 -LocalWhisperOnly -NoLaunch",
     "test": "node --test",
     "postinstall": "electron-rebuild -f -w node-pty",
     "rebuild:native": "electron-rebuild -f -w node-pty"
