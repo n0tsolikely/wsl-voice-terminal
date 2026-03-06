@@ -114,3 +114,24 @@ test('extractSpeechText ignores pending-steer and Codex footer lines', () => {
 
   assert.equal(output, 'I fixed the clipboard bridge and the reply playback trigger.')
 })
+
+test('extractSpeechText keeps Claude reply text but drops Claude tool chatter and shortcuts chrome', () => {
+  const input = [
+    '● Read 1 file (ctrl+o to expand)',
+    '',
+    '❯ hello',
+    '',
+    "● Hey! I've read the rehydration file and have the full context from the previous session.",
+    '',
+    '──────────────────────────────────────────────────── ▪▪▪ ─',
+    '❯ ',
+    '? for shortcuts'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    "Hey! I've read the rehydration file and have the full context from the previous session."
+  )
+})

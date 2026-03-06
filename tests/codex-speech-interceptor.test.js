@@ -50,7 +50,7 @@ test('finalizes when a shell prompt returns after a one-shot codex command', () 
 
   assert.equal(interceptor.flush(), 'Here is the final answer.')
   assert.deepEqual(emitted, ['Here is the final answer.'])
-  assert.equal(interceptor.codexSessionActive, false)
+  assert.equal(interceptor.activeAssistant, null)
 })
 
 test('finalizes when the alternate screen exits even if no prompt text is visible', () => {
@@ -96,4 +96,50 @@ test('does not emit duplicates when flushed repeatedly after completion', () => 
   assert.equal(interceptor.flush(), 'Here is the final answer.')
   assert.equal(interceptor.flush(), null)
   assert.deepEqual(emitted, ['Here is the final answer.'])
+})
+
+test('finalizes Claude Code replies when the prompt and shortcuts footer return', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeInput('claude\r')
+  interceptor.observeOutput('Claude Code\n❯ \n? for shortcuts\n')
+  interceptor.observeInput('hello\r')
+  interceptor.observeOutput("● Hey! I've read the repo and I can help.\n❯ \n? for shortcuts\n")
+
+  assert.equal(interceptor.flush(), "Hey! I've read the repo and I can help.")
+  assert.deepEqual(emitted, ["Hey! I've read the repo and I can help."])
+})
+
+test('does not finalize Claude Code tool confirmation prompts as completed replies', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeInput('claude\r')
+  interceptor.observeOutput('Claude Code\n❯ \n? for shortcuts\n')
+  interceptor.observeInput('check the repo\r')
+  interceptor.observeOutput(
+    [
+      "● I've absorbed the context and I am checking the repo.",
+      '● Bash(cd /repo)',
+      '❯ 1. Yes',
+      'Esc to cancel · Tab to amend · ctrl+e to explain'
+    ].join('\n')
+  )
+
+  assert.equal(interceptor.flush(), null)
+  assert.deepEqual(emitted, [])
+
+  interceptor.observeOutput(
+    [
+      '',
+      '● Here is the final answer after the tool finished.',
+      '❯ ',
+      '? for shortcuts'
+    ].join('\n')
+  )
+
+  const finalized = interceptor.flush()
+
+  assert.match(finalized, /Here is the final answer after the tool finished\./)
+  assert.doesNotMatch(finalized, /Esc to cancel/)
+  assert.equal(emitted.length, 1)
 })

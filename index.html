@@ -655,7 +655,7 @@
             </div>
             <div id="actionRow">
               <div id="modeSelector" aria-label="Microphone mode">
-                <button class="modeButton" data-mode="hold" type="button">Hold</button>
+                <button class="modeButton" data-mode="hold" type="button">PTT</button>
                 <button class="modeButton" data-mode="toggle" type="button">Click</button>
                 <button class="modeButton" data-mode="auto" type="button">Auto</button>
               </div>
@@ -668,7 +668,7 @@
       <div id="statusDock">
         <div id="status" aria-live="polite">Click mic to talk. Press Enter to stop.</div>
       </div>
-      <button id="micButton" type="button" aria-label="Hold to dictate">
+      <button id="micButton" type="button" aria-label="PTT: hold to dictate">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path
             d="M12 16a4 4 0 0 0 4-4V7a4 4 0 1 0-8 0v5a4 4 0 0 0 4 4Z"
@@ -687,6 +687,7 @@
     <script src="./node_modules/xterm/lib/xterm.js"></script>
     <script src="./node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script src="./lib/mic-state.js"></script>
+    <script src="./lib/dev-dictionary.js"></script>
     <script src="./lib/dictation-buffer.js"></script>
     <script src="./mic-controls.js"></script>
     <script src="./renderer.js"></script>

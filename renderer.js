@@ -1889,7 +1889,7 @@
   function formatModeLabel(mode) {
     switch (mode) {
       case MIC_MODES.HOLD:
-        return 'Hold'
+        return 'PTT'
       case MIC_MODES.AUTO:
         return 'Auto'
       case MIC_MODES.TOGGLE:
@@ -2183,10 +2183,23 @@
       button.type = 'button'
       button.disabled = message.isLoadingAudio
       button.dataset.active = String(activeReplyPlaybackId === message.id)
-      button.setAttribute('aria-label', `Play reply: ${message.text.slice(0, 80)}`)
+      button.setAttribute(
+        'aria-label',
+        activeReplyPlaybackId === message.id
+          ? `Stop reply: ${message.text.slice(0, 80)}`
+          : `Play reply: ${message.text.slice(0, 80)}`
+      )
       button.innerHTML =
         '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 10.5V13.5H8.5L13 18V6L8.5 10.5H5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M16 9C17.333 10.167 18 11.5 18 13C18 14.5 17.333 15.833 16 17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>'
       button.addEventListener('click', () => {
+        if (activeReplyPlaybackId === message.id) {
+          stopSpeechPlayback({
+            clearQueue: true
+          })
+          focusTerminal()
+          return
+        }
+
         playReplyMessage(message.id).catch((error) => {
           setStatus(error.message, 'error')
         })
@@ -2210,6 +2223,12 @@
       })
       message.isLoadingAudio = !message.audioBase64
       renderReplyHistory()
+
+      if (currentPlaybackHandle || playbackQueue.length) {
+        stopSpeechPlayback({
+          clearQueue: true
+        })
+      }
 
       if (!message.audioBase64) {
         const payload = await api.previewSpeech({

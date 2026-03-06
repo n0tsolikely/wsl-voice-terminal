@@ -58,6 +58,16 @@ test('committed dictation adds leading space only when needed', () => {
   assert.equal(appended.buffer.committedText, 'hello world')
 })
 
+test('dictation buffer applies developer dictionary corrections before insertion', () => {
+  const buffer = createDictationBuffer()
+  const appended = appendCommittedDictation(
+    buffer,
+    'create a snake case variable user id and open bracket close bracket'
+  )
+
+  assert.equal(appended.insertText, 'create a snake_case variable user_id and ()')
+})
+
 test('manual cancel clears interim dictation and resets the buffer', () => {
   let buffer = createDictationBuffer()
 
