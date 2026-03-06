@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WSL Voice Terminal</title>
+    <link rel="stylesheet" href="./node_modules/xterm/css/xterm.css" />
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #111111;
+      }
+
+      body {
+        position: relative;
+      }
+
+      #terminal {
+        width: 100%;
+        height: 100%;
+        padding: 12px;
+      }
+
+      #overlay {
+        position: absolute;
+        right: 48px;
+        bottom: 28px;
+        display: flex;
+        align-items: flex-end;
+        gap: 12px;
+        z-index: 20;
+        pointer-events: none;
+      }
+
+      #controlPanel {
+        min-width: 280px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 20px;
+        background: rgba(8, 8, 8, 0.86);
+        box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34);
+        backdrop-filter: blur(16px);
+        pointer-events: auto;
+      }
+
+      #status {
+        min-width: 220px;
+        padding: 0;
+        border-radius: 999px;
+        color: #f3f3f3;
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        line-height: 1.4;
+      }
+
+      #status[data-tone="error"] {
+        color: #ffb0b0;
+      }
+
+      #meter {
+        height: 34px;
+        display: grid;
+        grid-template-columns: repeat(16, minmax(0, 1fr));
+        gap: 4px;
+        align-items: end;
+      }
+
+      .meterBar {
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(180deg, rgba(255, 186, 94, 0.95), rgba(255, 90, 90, 0.55));
+        box-shadow: 0 0 16px rgba(255, 112, 112, 0.16);
+        opacity: 0.38;
+        transform: scaleY(var(--bar-scale, 0.12));
+        transform-origin: center bottom;
+        transition:
+          transform 70ms linear,
+          opacity 70ms linear,
+          background 160ms ease;
+      }
+
+      .meterBar[data-active="true"] {
+        opacity: 0.95;
+      }
+
+      #modeSelector {
+        flex: 1;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      #actionRow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .modeButton {
+        min-height: 36px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.82);
+        font: inherit;
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition:
+          border-color 140ms ease,
+          background 140ms ease,
+          color 140ms ease,
+          transform 140ms ease;
+      }
+
+      .modeButton:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.28);
+      }
+
+      .modeButton[data-selected="true"] {
+        border-color: rgba(255, 184, 120, 0.45);
+        background: rgba(255, 173, 92, 0.18);
+        color: #fff1d6;
+      }
+
+      #speakerButton {
+        min-height: 36px;
+        padding: 0 14px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+        background: rgba(91, 124, 255, 0.14);
+        color: #dbe5ff;
+        font: inherit;
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition:
+          border-color 140ms ease,
+          background 140ms ease,
+          transform 140ms ease;
+      }
+
+      #speakerButton:hover {
+        transform: translateY(-1px);
+        border-color: rgba(181, 199, 255, 0.35);
+        background: rgba(91, 124, 255, 0.22);
+      }
+
+      #micButton {
+        width: 60px;
+        height: 60px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 50%;
+        background: rgba(14, 14, 14, 0.86);
+        color: #ffffff;
+        cursor: pointer;
+        pointer-events: auto;
+        box-shadow: 0 10px 36px rgba(0, 0, 0, 0.35);
+        transition:
+          transform 120ms ease,
+          border-color 120ms ease,
+          background 120ms ease;
+      }
+
+      #micButton:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.34);
+      }
+
+      #micButton[data-state="recording"] {
+        background: rgba(160, 26, 26, 0.94);
+        border-color: rgba(255, 152, 152, 0.65);
+        transform: scale(1.04);
+      }
+
+      #micButton[data-state="armed"] {
+        background: rgba(21, 93, 79, 0.94);
+        border-color: rgba(129, 237, 207, 0.46);
+      }
+
+      #micButton[data-state="transcribing"] {
+        background: rgba(128, 88, 16, 0.94);
+        border-color: rgba(255, 218, 133, 0.52);
+      }
+
+      #micButton:focus-visible {
+        outline: 2px solid rgba(255, 255, 255, 0.8);
+        outline-offset: 3px;
+      }
+
+      #micButton svg {
+        width: 28px;
+        height: 28px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="terminal"></div>
+    <div id="overlay">
+      <div id="controlPanel">
+        <div id="status" aria-live="polite">Click mic to talk. Press Enter to stop.</div>
+        <div id="meter" aria-hidden="true">
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+          <span class="meterBar"></span>
+        </div>
+        <div id="actionRow">
+          <div id="modeSelector" aria-label="Microphone mode">
+            <button class="modeButton" data-mode="hold" type="button">Hold</button>
+            <button class="modeButton" data-mode="toggle" type="button">Click</button>
+            <button class="modeButton" data-mode="auto" type="button">Auto</button>
+          </div>
+          <button id="speakerButton" type="button">Test Voice</button>
+        </div>
+      </div>
+      <button id="micButton" type="button" aria-label="Hold to dictate">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M12 16a4 4 0 0 0 4-4V7a4 4 0 1 0-8 0v5a4 4 0 0 0 4 4Z"
+            stroke="currentColor"
+            stroke-width="1.7"
+          />
+          <path
+            d="M5 11.5a7 7 0 0 0 14 0M12 18.5V22M8.5 22h7"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+          />
+        </svg>
+      </button>
+    </div>
+    <script src="./node_modules/xterm/lib/xterm.js"></script>
+    <script src="./node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

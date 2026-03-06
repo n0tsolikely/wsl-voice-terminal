@@ -1,0 +1,27 @@
+const { clipboard, contextBridge, ipcRenderer } = require('electron')
+
+function subscribe(channel, handler) {
+  const listener = (_event, payload) => {
+    handler(payload)
+  }
+
+  ipcRenderer.on(channel, listener)
+
+  return () => {
+    ipcRenderer.removeListener(channel, listener)
+  }
+}
+
+contextBridge.exposeInMainWorld('terminalAPI', {
+  startPty: (dimensions) => ipcRenderer.invoke('pty:start', dimensions),
+  writeToPty: (data) => ipcRenderer.send('pty:input', data),
+  resizePty: (dimensions) => ipcRenderer.send('pty:resize', dimensions),
+  transcribeAudio: (payload) => ipcRenderer.invoke('stt:transcribe', payload),
+  previewSpeech: (payload) => ipcRenderer.invoke('speech:preview', payload),
+  readClipboardText: () => clipboard.readText(),
+  onPtyData: (handler) => subscribe('pty:data', handler),
+  onPtyExit: (handler) => subscribe('pty:exit', handler),
+  onSpeechAudio: (handler) => subscribe('speech:audio', handler),
+  onStatus: (handler) => subscribe('app:status', handler),
+  onError: (handler) => subscribe('app:error', handler)
+})

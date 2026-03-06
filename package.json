@@ -1,0 +1,22 @@
+{
+  "name": "wsl-voice-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron terminal wrapper for WSL with press-to-talk input and Codex-focused TTS output.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "postinstall": "electron-rebuild -f -w node-pty",
+    "rebuild:native": "electron-rebuild -f -w node-pty"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "node-pty": "^1.0.0",
+    "xterm": "^5.3.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "electron": "^35.3.0"
+  }
+}
