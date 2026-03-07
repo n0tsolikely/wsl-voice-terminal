@@ -11,6 +11,7 @@
   const speechToggleButton = document.getElementById('speechToggleButton')
   const micButton = document.getElementById('micButton')
   const speakerButton = document.getElementById('speakerButton')
+  const statusDockElement = document.getElementById('statusDock')
   const statusElement = document.getElementById('status')
   const modeDetailElement = document.getElementById('modeDetail')
   const updatePromptElement = document.getElementById('updatePrompt')
@@ -73,6 +74,8 @@
   const REPLY_HISTORY_LIMIT = 6
   const REPLY_HISTORY_AUTO_HIDE_MS = 15000
   const STATUS_NOTICE_MS = 2600
+  const STATUS_DISSIPATE_MS = 380
+  const REPLY_HISTORY_DISSIPATE_MS = 420
   const AUTO_REPLY_SPEECH_STORAGE_KEY = 'wsl-voice-terminal.auto-reply-speech-enabled'
   const BUSY_PHASES = new Set([
     MIC_PHASES.RECORDING,
@@ -112,6 +115,8 @@
   let meterAnimationFrame = 0
   let statusOverride = null
   let statusOverrideTimer = 0
+  let statusDismissTimer = 0
+  let isStatusDissipating = false
   let isPreviewRequestPending = false
   let autoNoiseFloor = AUTO_MIN_CONTINUE_THRESHOLD * 0.5
   let activeReplyPlaybackId = ''
@@ -124,6 +129,8 @@
   let isReplyHistoryPinned = false
   let isReplyHistoryVisible = false
   let replyHistoryHideTimer = 0
+  let replyHistoryDismissTimer = 0
+  let isReplyHistoryDissipating = false
   let lastShortcutPasteAt = 0
   let updatePromptState = {
     visible: false,
@@ -266,10 +273,12 @@
     if (shouldShowReplyHistory()) {
       isReplyHistoryPinned = false
       isReplyHistoryVisible = false
+      isReplyHistoryDissipating = false
       clearReplyHistoryHideTimer()
     } else {
       isReplyHistoryPinned = true
       isReplyHistoryVisible = true
+      isReplyHistoryDissipating = false
       clearReplyHistoryHideTimer()
     }
 
@@ -811,6 +820,7 @@
     }
 
     clearStatusTimer()
+    isStatusDissipating = false
 
     const sticky = options.sticky ?? tone === 'error'
     const durationMs = options.durationMs ?? (sticky ? 0 : STATUS_NOTICE_MS)
@@ -826,8 +836,7 @@
     if (!sticky && durationMs > 0) {
       statusOverrideTimer = window.setTimeout(() => {
         if (statusOverride?.expiresAt && statusOverride.expiresAt <= performance.now()) {
-          statusOverride = null
-          renderStatus()
+          dismissStatusOverride()
         }
       }, durationMs + 20)
     }
@@ -842,17 +851,37 @@
     }
 
     clearStatusTimer()
+    isStatusDissipating = false
     statusOverride = null
     renderStatus()
   }
 
   function clearStatusTimer() {
-    if (!statusOverrideTimer) {
+    if (statusOverrideTimer) {
+      window.clearTimeout(statusOverrideTimer)
+      statusOverrideTimer = 0
+    }
+
+    if (statusDismissTimer) {
+      window.clearTimeout(statusDismissTimer)
+      statusDismissTimer = 0
+    }
+  }
+
+  function dismissStatusOverride() {
+    if (!statusOverride || statusOverride.sticky || statusOverride.tone === 'error') {
       return
     }
 
-    window.clearTimeout(statusOverrideTimer)
-    statusOverrideTimer = 0
+    clearStatusTimer()
+    isStatusDissipating = true
+    renderStatus()
+    statusDismissTimer = window.setTimeout(() => {
+      statusOverride = null
+      isStatusDissipating = false
+      statusDismissTimer = 0
+      renderStatus()
+    }, STATUS_DISSIPATE_MS)
   }
 
   async function pasteClipboardText() {
@@ -974,18 +1003,28 @@
   }
 
   function renderStatus() {
-    const viewModel = getMicViewModel(micState)
     const override = getActiveStatusOverride()
     const shouldUseOverride =
       Boolean(override) &&
       (override.tone === 'error' || override.persistDuringBusy || !isBusyUiPhase())
-    const status = shouldUseOverride
-      ? override
-      : {
-          message: viewModel.statusText,
-          tone: 'default'
-        }
+    const status = shouldUseOverride ? override : null
 
+    if (!statusDockElement || !statusElement) {
+      return
+    }
+
+    if (!status) {
+      statusDockElement.hidden = true
+      statusDockElement.dataset.visible = 'false'
+      statusDockElement.dataset.dissipating = 'false'
+      statusElement.textContent = ''
+      statusElement.dataset.tone = 'default'
+      return
+    }
+
+    statusDockElement.hidden = false
+    statusDockElement.dataset.visible = 'true'
+    statusDockElement.dataset.dissipating = String(isStatusDissipating)
     statusElement.textContent = status.message
     statusElement.dataset.tone = status.tone
   }
@@ -2311,6 +2350,7 @@
     }
 
     trimReplyHistory()
+    isReplyHistoryDissipating = false
     revealReplyHistory()
     renderReplyHistory()
   }
@@ -2338,6 +2378,7 @@
     message.audioBase64 = payload.audioBase64 || message.audioBase64
     message.mimeType = payload.mimeType || message.mimeType || 'audio/mpeg'
     message.provider = payload.provider || message.provider
+    isReplyHistoryDissipating = false
     revealReplyHistory()
     renderReplyHistory()
   }
@@ -2357,6 +2398,7 @@
 
     replyHistoryElement.hidden = replyMessages.length === 0
     replyHistoryElement.dataset.visible = String(shouldShow)
+    replyHistoryElement.dataset.dissipating = String(isReplyHistoryDissipating)
     replyHistoryToggleButton.dataset.active = String(shouldShow)
     replyHistoryToggleButton.setAttribute('aria-pressed', String(shouldShow))
     replyHistoryToggleButton.setAttribute(
@@ -2368,9 +2410,10 @@
       : 'Show recent reply playback controls'
     replyHistoryElement.replaceChildren()
 
-    for (const message of replyMessages) {
+    replyMessages.forEach((message, index) => {
       const item = document.createElement('div')
       item.className = 'replyItem'
+      item.style.setProperty('--reply-index', String(index))
 
       const text = document.createElement('div')
       text.className = 'replyText'
@@ -2402,10 +2445,9 @@
           setStatus(error.message, 'error')
         })
       })
-
       item.append(text, button)
       replyHistoryElement.append(item)
-    }
+    })
   }
 
   async function playReplyMessage(messageId) {
@@ -2463,11 +2505,13 @@
   function revealReplyHistory({ sticky = false } = {}) {
     if (!replyMessages.length) {
       isReplyHistoryVisible = false
+      isReplyHistoryDissipating = false
       clearReplyHistoryHideTimer()
       return
     }
 
     isReplyHistoryVisible = true
+    isReplyHistoryDissipating = false
 
     if (sticky || isReplyHistoryPinned) {
       clearReplyHistoryHideTimer()
@@ -2485,18 +2529,27 @@
     }
 
     replyHistoryHideTimer = window.setTimeout(() => {
-      isReplyHistoryVisible = false
+      isReplyHistoryDissipating = true
       renderReplyHistory()
+      replyHistoryDismissTimer = window.setTimeout(() => {
+        isReplyHistoryVisible = false
+        isReplyHistoryDissipating = false
+        replyHistoryDismissTimer = 0
+        renderReplyHistory()
+      }, REPLY_HISTORY_DISSIPATE_MS)
     }, REPLY_HISTORY_AUTO_HIDE_MS)
   }
 
   function clearReplyHistoryHideTimer() {
-    if (!replyHistoryHideTimer) {
-      return
+    if (replyHistoryHideTimer) {
+      window.clearTimeout(replyHistoryHideTimer)
+      replyHistoryHideTimer = 0
     }
 
-    window.clearTimeout(replyHistoryHideTimer)
-    replyHistoryHideTimer = 0
+    if (replyHistoryDismissTimer) {
+      window.clearTimeout(replyHistoryDismissTimer)
+      replyHistoryDismissTimer = 0
+    }
   }
 
   function shouldShowReplyHistory() {
