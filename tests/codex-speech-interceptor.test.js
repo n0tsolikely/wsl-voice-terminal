@@ -200,6 +200,31 @@ test('does not speak echoed user input when Codex redraws it before the reply', 
   ])
 })
 
+test('does not finalize unsent draft input as assistant speech before enter is pressed', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Use /skills to list available skills\n')
+  interceptor.activeAssistant = 'codex'
+  interceptor.pendingResponse = true
+
+  interceptor.observeInput('hey, how are you? test')
+  interceptor.observeOutput('hey, how are you? test\n› Use /skills to list available skills\n')
+
+  assert.equal(interceptor.flush(), null)
+  assert.deepEqual(emitted, [])
+
+  interceptor.observeInput('\r')
+  interceptor.observeOutput(
+    'Fine. I’m here and responding normally. Your test message came through.\n› Use /skills to list available skills\n'
+  )
+
+  assert.equal(
+    interceptor.flush(),
+    'Fine. I’m here and responding normally. Your test message came through.'
+  )
+  assert.deepEqual(emitted, ['Fine. I’m here and responding normally. Your test message came through.'])
+})
+
 test('does not emit duplicates when flushed repeatedly after completion', () => {
   const { interceptor, emitted } = createInterceptor()
 

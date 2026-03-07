@@ -75,8 +75,8 @@
   const LIVE_STOP_WAIT_MS = 900
   const REPLY_HISTORY_LIMIT = 6
   const REPLY_HISTORY_AUTO_HIDE_MS = 15000
-  const REPLY_HISTORY_AFTER_PLAYBACK_HIDE_MS = 900
-  const STATUS_NOTICE_MS = 2600
+  const REPLY_HISTORY_AFTER_PLAYBACK_HIDE_MS = 650
+  const STATUS_NOTICE_MS = 5000
   const AUTO_REPLY_SPEECH_STORAGE_KEY = 'wsl-voice-terminal.auto-reply-speech-enabled'
   const BUSY_PHASES = new Set([
     MIC_PHASES.RECORDING,
@@ -484,7 +484,7 @@
     isStartingRecording = true
     renderUi()
     setStatus('Opening mic...', 'default', {
-      sticky: true,
+      durationMs: STATUS_NOTICE_MS,
       persistDuringBusy: true
     })
 
@@ -655,7 +655,7 @@
             'Live preview is unavailable here. The final transcript will appear after capture stops.',
             'default',
             {
-              durationMs: 3400,
+              durationMs: STATUS_NOTICE_MS,
               persistDuringBusy: true
             }
           )
@@ -885,8 +885,10 @@
     clearStatusTimer()
     if (statusOverride?.message && statusOverride.tone !== 'error') {
       vaporizeBubble(statusElement, {
-        durationMs: 560,
-        particleSize: 3
+        durationMs: 680,
+        particleSize: 2,
+        travel: 36,
+        gravity: 14
       })
     }
     statusOverride = null
@@ -907,8 +909,10 @@
 
     clearStatusTimer()
     vaporizeBubble(statusElement, {
-      durationMs: 560,
-      particleSize: 3
+      durationMs: 680,
+      particleSize: 2,
+      travel: 36,
+      gravity: 14
     })
     statusOverride = null
     renderStatus()
@@ -1605,7 +1609,7 @@
         'Live preview is unavailable in this runtime. Final transcription will still be injected when capture finishes.',
         'default',
         {
-          durationMs: 3200,
+          durationMs: STATUS_NOTICE_MS,
           persistDuringBusy: true
         }
       )
@@ -2662,9 +2666,10 @@
     const items = Array.from(replyHistoryElement.querySelectorAll('.replyItem'))
     items.forEach((item, index) => {
       vaporizeBubble(item, {
-        durationMs: 620,
+        durationMs: 680,
         particleSize: 2,
-        travel: 32,
+        travel: 38,
+        gravity: 16,
         delayMs: index * 34
       })
     })

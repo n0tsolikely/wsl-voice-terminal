@@ -117,6 +117,18 @@ test('extractSpeechText ignores claude cursor-redraw context and token lines', (
   assert.equal(output, 'Here is the actual assistant answer. It should be spoken cleanly.')
 })
 
+test('extractSpeechText strips Claude model chrome prefixes from the spoken answer line', () => {
+  const input = [
+    '· Channeling…X ▪▪▪ Medium /model · Channeling…X ▪▪▪ Medium /model Hey! How can I help you?',
+    '',
+    '? for shortcuts'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'Hey! How can I help you?')
+})
+
 test('extractSpeechText strips decorative bullet markers from real reply text', () => {
   const input = [
     '• Here and ready. If you want, I can inspect code, fix something, review a change, or just answer a question.',
@@ -313,6 +325,6 @@ test('extractSpeechText keeps the lead-in before a bullet list like the runtime 
 
   assert.equal(
     output,
-    "I’m checking the current workspace state so I can answer concretely instead of guessing. First step is to verify where we are and whether this is a repo with extra contract files. Right now, not much. We’re sitting in /mnt/c/Users/peter, which looks like your Windows home directory, not an active repo root. Current dir: /mnt/c/Users/peter Git repo found nearby: /mnt/c/Users/peter/film_crew AGENTS.md files exist in subfolders like /mnt/c/Users/peter/Desktop/AGENTS.md, but not as the contract for the current home-directory worktree I did not find the Synapse pair EXECUTOR.md plus governance/SYNAPSE_STATE.yaml in the current worktree, so Synapse is not engaged here So the concrete answer is: no repo-specific workflow is active yet, and I haven’t made any changes."
+    "I’m checking the current workspace state so I can answer concretely instead of guessing. First step is to verify where we are and whether this is a repo with extra contract files. Right now, not much. We’re sitting in /mnt/c/Users/peter, which looks like your Windows home directory, not an active repo root. AGENTS.md files exist in subfolders like /mnt/c/Users/peter/Desktop/AGENTS.md, but not as the contract for the current home-directory worktree I did not find the Synapse pair EXECUTOR.md plus governance/SYNAPSE_STATE.yaml in the current worktree, so Synapse is not engaged here So the concrete answer is: no repo-specific workflow is active yet, and I haven’t made any changes."
   )
 })
