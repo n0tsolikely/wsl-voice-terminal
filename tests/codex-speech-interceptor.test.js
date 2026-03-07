@@ -175,6 +175,31 @@ test('finalizes a Codex reply when the prompt redraw happens before a trailing f
   ])
 })
 
+test('does not speak echoed user input when Codex redraws it before the reply', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Use /skills to list available skills\n')
+  interceptor.observeInput('check runtime and fix tts\r')
+  interceptor.observeOutput(
+    [
+      'check runtime and fix tts',
+      '',
+      'Yes. I found the speech extraction issue.',
+      '',
+      'I will only read the assistant reply now.',
+      '› Use /skills to list available skills'
+    ].join('\n')
+  )
+
+  assert.equal(
+    interceptor.flush(),
+    'Yes. I found the speech extraction issue. I will only read the assistant reply now.'
+  )
+  assert.deepEqual(emitted, [
+    'Yes. I found the speech extraction issue. I will only read the assistant reply now.'
+  ])
+})
+
 test('does not emit duplicates when flushed repeatedly after completion', () => {
   const { interceptor, emitted } = createInterceptor()
 

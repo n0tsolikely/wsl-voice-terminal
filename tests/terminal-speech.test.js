@@ -174,3 +174,43 @@ test('extractSpeechText keeps Claude reply text but drops Claude tool chatter an
     "Hey! I've read the rehydration file and have the full context from the previous session."
   )
 })
+
+test('extractSpeechText prefers the final conversational run over earlier assistant chatter', () => {
+  const input = [
+    "I'm checking that now and reading the current files.",
+    '',
+    '● Bash(cd /repo && git status)',
+    '',
+    'Here is the final assistant answer.',
+    '',
+    'It should be the part that gets spoken.',
+    '',
+    '❯ '
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Here is the final assistant answer. It should be the part that gets spoken.'
+  )
+})
+
+test('extractSpeechText keeps full multi-paragraph replies instead of truncating after one paragraph', () => {
+  const input = [
+    'Yes. Your last message came through clearly.',
+    '',
+    'Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand.',
+    '',
+    'The spacing is fixed now and future replies should read cleanly.',
+    '',
+    '› Use /skills to list available skills'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Yes. Your last message came through clearly. Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand. The spacing is fixed now and future replies should read cleanly.'
+  )
+})
