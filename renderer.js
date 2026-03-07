@@ -75,6 +75,7 @@
   const LIVE_STOP_WAIT_MS = 900
   const REPLY_HISTORY_LIMIT = 6
   const REPLY_HISTORY_AUTO_HIDE_MS = 15000
+  const REPLY_HISTORY_AFTER_PLAYBACK_HIDE_MS = 900
   const STATUS_NOTICE_MS = 2600
   const AUTO_REPLY_SPEECH_STORAGE_KEY = 'wsl-voice-terminal.auto-reply-speech-enabled'
   const BUSY_PHASES = new Set([
@@ -745,7 +746,9 @@
         type: 'PLAYBACK_FINISHED'
       })
       logRuntime('speech.playback_queue_drained', {})
-      scheduleReplyHistoryHide()
+      scheduleReplyHistoryHide({
+        delayMs: REPLY_HISTORY_AFTER_PLAYBACK_HIDE_MS
+      })
       return
     }
 
@@ -775,7 +778,9 @@
       }
       activeReplyPlaybackId = ''
       if (!isReplyHistoryPinned) {
-        scheduleReplyHistoryHide()
+        scheduleReplyHistoryHide({
+          delayMs: REPLY_HISTORY_AFTER_PLAYBACK_HIDE_MS
+        })
       }
       renderReplyHistory()
       logRuntime('speech.playback_finished', {
@@ -2624,7 +2629,7 @@
     scheduleReplyHistoryHide()
   }
 
-  function scheduleReplyHistoryHide() {
+  function scheduleReplyHistoryHide({ delayMs = REPLY_HISTORY_AUTO_HIDE_MS } = {}) {
     clearReplyHistoryHideTimer()
 
     if (isReplyHistoryPinned || !replyMessages.length) {
@@ -2633,7 +2638,7 @@
 
     replyHistoryHideTimer = window.setTimeout(() => {
       dismissReplyHistory()
-    }, REPLY_HISTORY_AUTO_HIDE_MS)
+    }, delayMs)
   }
 
   function clearReplyHistoryHideTimer() {
@@ -2658,7 +2663,8 @@
     items.forEach((item, index) => {
       vaporizeBubble(item, {
         durationMs: 620,
-        particleSize: 3,
+        particleSize: 2,
+        travel: 32,
         delayMs: index * 34
       })
     })
@@ -2671,6 +2677,12 @@
       return
     }
 
+    logRuntime('ui.vaporize', {
+      tagName: element.tagName.toLowerCase(),
+      className: element.className || '',
+      durationMs: options.durationMs || 0,
+      particleSize: options.particleSize || 0
+    })
     vaporizeApi.vaporizeElement(element, options).catch(() => {})
   }
 
