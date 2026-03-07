@@ -68,6 +68,16 @@ test('dictation buffer applies developer dictionary corrections before insertion
   assert.equal(appended.insertText, 'create a snake_case variable user_id and ()')
 })
 
+test('dictation buffer strips trailing sentence punctuation and avoids auto-capitalization', () => {
+  const buffer = createDictationBuffer()
+  const appended = appendCommittedDictation(
+    buffer,
+    'Create a snake case variable user id and open bracket close bracket.'
+  )
+
+  assert.equal(appended.insertText, 'create a snake_case variable user_id and ()')
+})
+
 test('manual cancel clears interim dictation and resets the buffer', () => {
   let buffer = createDictationBuffer()
 
