@@ -2,6 +2,7 @@
   const api = window.terminalAPI
   const micStateApi = window.WslVoiceTerminalMicState
   const dictationApi = window.WslVoiceTerminalDictationBuffer
+  const autoSpeechFilterApi = window.WslVoiceTerminalAutoSpeechFilter || null
   const vaporizeApi = window.WslVoiceTerminalVaporize || null
   const terminalElement = document.getElementById('terminal')
   const replyHistoryElement = document.getElementById('replyHistory')
@@ -106,6 +107,7 @@
   let liveFallbackVoiceSince = 0
   let lastLiveResultAt = 0
   let playbackQuietUntil = 0
+  let autoLiveVoiceMetrics = createAutoVoiceMetrics()
   let audioContext = null
   let analyser = null
   let sourceNode = null
@@ -497,7 +499,8 @@
       const capture = {
         keepAutoArmed,
         source,
-        startedAt: performance.now()
+        startedAt: performance.now(),
+        autoVoiceMetrics: source === MIC_MODES.AUTO ? createAutoVoiceMetrics() : null
       }
 
       mediaRecorder = recorder
@@ -521,6 +524,7 @@
           const mimeType = recorder.mimeType || 'audio/webm'
           const captureSource = currentCapture?.source || source
           const shouldResumeAuto = Boolean(currentCapture?.keepAutoArmed) && isAutoArmed()
+          const captureVoiceMetrics = cloneAutoVoiceMetrics(currentCapture?.autoVoiceMetrics)
           const pointerId = activePointerId
 
           currentCapture = null
@@ -560,6 +564,21 @@
               return
             }
 
+            if (
+              captureSource === MIC_MODES.AUTO &&
+              !shouldAttemptAutoTranscription(captureVoiceMetrics)
+            ) {
+              transitionMic({
+                type: 'TRANSCRIPTION_EMPTY'
+              })
+              setStatus(
+                shouldResumeAuto ? 'Auto listening is on. No speech detected.' : 'No speech detected.',
+                'default'
+              )
+              focusTerminal()
+              return
+            }
+
             transitionMic({
               type: 'TRANSCRIBING_STARTED'
             })
@@ -569,8 +588,24 @@
               mimeType: blob.type || mimeType
             })
             const injectedText = normalizeDictationText(transcript || liveSnapshot?.text)
+            const acceptedAutoTranscript =
+              captureSource === MIC_MODES.AUTO
+                ? evaluateAutoTranscriptCandidate(injectedText, captureVoiceMetrics, {
+                    minVoiceMs: 190,
+                    minPeakLevel: 0.026
+                  })
+                : { accepted: true, normalizedText: injectedText, reason: 'manual-mode' }
 
-            if (!injectedText) {
+            if (!acceptedAutoTranscript.accepted) {
+              logRuntime('dictation.auto_capture_rejected', {
+                reason: acceptedAutoTranscript.reason,
+                text: acceptedAutoTranscript.normalizedText || '',
+                voiceMs: captureVoiceMetrics.voiceMs,
+                peakLevel: captureVoiceMetrics.peakLevel
+              })
+            }
+
+            if (!acceptedAutoTranscript.normalizedText || !acceptedAutoTranscript.accepted) {
               transitionMic({
                 type: 'TRANSCRIPTION_EMPTY'
               })
@@ -583,9 +618,9 @@
             }
 
             if (captureSource === MIC_MODES.AUTO) {
-              appendCommittedDictationText(injectedText)
+              appendCommittedDictationText(acceptedAutoTranscript.normalizedText)
             } else {
-              finalizeBufferedDictationText(injectedText)
+              finalizeBufferedDictationText(acceptedAutoTranscript.normalizedText)
             }
 
             transitionMic({
@@ -1245,6 +1280,7 @@
     const { startThreshold, continueThreshold } = getAutoGateThresholds()
 
     if (shouldUseLiveDictation()) {
+      sampleAutoVoiceMetrics(autoLiveVoiceMetrics, level, continueThreshold, now)
       maybeFallbackFromLiveDictation(level, now)
       processAutoLiveListening(level, now, continueThreshold)
       return
@@ -1260,6 +1296,10 @@
     }
 
     if (isRecording()) {
+      if (currentCapture?.source === MIC_MODES.AUTO) {
+        sampleAutoVoiceMetrics(currentCapture.autoVoiceMetrics, level, continueThreshold, now)
+      }
+
       if (level >= continueThreshold) {
         lastVoiceAt = now
       }
@@ -1919,8 +1959,23 @@
 
   function submitAutoLiveDictation() {
     const text = normalizeDictationText(getVisibleDictationText())
+    const verdict = evaluateAutoTranscriptCandidate(text, autoLiveVoiceMetrics, {
+      minVoiceMs: 160,
+      minPeakLevel: 0.022
+    })
 
-    if (!text) {
+    if (!verdict.normalizedText || !verdict.accepted) {
+      if (text && !verdict.accepted) {
+        logRuntime('dictation.live_auto_rejected', {
+          reason: verdict.reason,
+          text: verdict.normalizedText || '',
+          voiceMs: autoLiveVoiceMetrics.voiceMs,
+          peakLevel: autoLiveVoiceMetrics.peakLevel
+        })
+      }
+
+      clearBufferedDictationText()
+      resetAutoVoiceMetrics(autoLiveVoiceMetrics)
       return false
     }
 
@@ -1929,8 +1984,9 @@
     lastVoiceAt = 0
     liveFallbackVoiceSince = 0
     lastLiveResultAt = 0
+    resetAutoVoiceMetrics(autoLiveVoiceMetrics)
     logRuntime('dictation.live_auto_injected', {
-      text
+      text: verdict.normalizedText
     })
     setStatus('Transcript injected. Auto listening stays on. Press Enter to run.', 'default', {
       durationMs: 2200,
@@ -1963,6 +2019,71 @@
     liveFallbackVoiceSince = 0
     lastLiveResultAt = 0
     autoNoiseFloor = AUTO_MIN_CONTINUE_THRESHOLD * 0.5
+    resetAutoVoiceMetrics(autoLiveVoiceMetrics)
+  }
+
+  function createAutoVoiceMetrics() {
+    return {
+      voiceMs: 0,
+      peakLevel: 0,
+      lastSampleAt: 0
+    }
+  }
+
+  function cloneAutoVoiceMetrics(metrics) {
+    return {
+      voiceMs: Number.isFinite(metrics?.voiceMs) ? metrics.voiceMs : 0,
+      peakLevel: Number.isFinite(metrics?.peakLevel) ? metrics.peakLevel : 0,
+      lastSampleAt: Number.isFinite(metrics?.lastSampleAt) ? metrics.lastSampleAt : 0
+    }
+  }
+
+  function resetAutoVoiceMetrics(metrics, at = performance.now()) {
+    if (!metrics) {
+      return
+    }
+
+    metrics.voiceMs = 0
+    metrics.peakLevel = 0
+    metrics.lastSampleAt = at
+  }
+
+  function sampleAutoVoiceMetrics(metrics, level, threshold, now = performance.now()) {
+    if (!metrics) {
+      return
+    }
+
+    const previousSampleAt = metrics.lastSampleAt || now
+    const deltaMs = Math.max(0, Math.min(120, now - previousSampleAt))
+
+    metrics.lastSampleAt = now
+
+    if (level < threshold) {
+      return
+    }
+
+    metrics.voiceMs += deltaMs
+    metrics.peakLevel = Math.max(metrics.peakLevel, level)
+  }
+
+  function shouldAttemptAutoTranscription(metrics) {
+    return (
+      Number.isFinite(metrics?.voiceMs) &&
+      Number.isFinite(metrics?.peakLevel) &&
+      (metrics.voiceMs >= 170 || metrics.peakLevel >= 0.024)
+    )
+  }
+
+  function evaluateAutoTranscriptCandidate(text, metrics, overrides = {}) {
+    if (!autoSpeechFilterApi?.evaluateAutoTranscript) {
+      return {
+        accepted: Boolean(text),
+        normalizedText: normalizeDictationText(text),
+        reason: text ? 'no-filter' : 'empty'
+      }
+    }
+
+    return autoSpeechFilterApi.evaluateAutoTranscript(text, metrics, overrides)
   }
 
   function isAutoArmed() {

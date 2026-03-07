@@ -237,3 +237,26 @@ test('extractSpeechText ignores earlier longer assistant chatter when a final an
     'The actual answer is ready now. Only this final reply should be spoken.'
   )
 })
+
+test('extractSpeechText keeps intro text when a short heading introduces a later list', () => {
+  const input = [
+    "I'm checking the current workspace state so I can answer concretely instead of guessing.",
+    '',
+    'Right now, not much. We are sitting in the Windows home directory, not an active repo root.',
+    '',
+    'What I verified:',
+    '',
+    'Current dir: /mnt/c/Users/peter',
+    'Git repo found nearby: /mnt/c/Users/peter/film_crew',
+    'Synapse is not engaged here.',
+    '',
+    'So the concrete answer is: no repo-specific workflow is active yet.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    "I'm checking the current workspace state so I can answer concretely instead of guessing. Right now, not much. We are sitting in the Windows home directory, not an active repo root. Current dir: /mnt/c/Users/peter Git repo found nearby: /mnt/c/Users/peter/film_crew Synapse is not engaged here. So the concrete answer is: no repo-specific workflow is active yet."
+  )
+})
