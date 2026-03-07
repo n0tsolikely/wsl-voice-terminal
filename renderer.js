@@ -2721,7 +2721,25 @@
       gravity: options.gravity || 0,
       reason: options.reason || ''
     })
-    vaporizeApi.vaporizeElement(element, options).catch(() => {})
+    vaporizeApi
+      .vaporizeElement(element, options)
+      .then((result) => {
+        logRuntime('ui.vaporize_result', {
+          ok: Boolean(result?.ok),
+          method: result?.method || '',
+          particleCount: Number(result?.particleCount || 0),
+          reason: options.reason || ''
+        })
+      })
+      .catch((error) => {
+        logRuntime('ui.vaporize_result', {
+          ok: false,
+          method: 'error',
+          particleCount: 0,
+          reason: options.reason || '',
+          errorMessage: error?.message || String(error || '')
+        })
+      })
   }
 
   async function applyAutoReplySpeechEnabled(

@@ -225,6 +225,24 @@ test('does not finalize unsent draft input as assistant speech before enter is p
   assert.deepEqual(emitted, ['Fine. I’m here and responding normally. Your test message came through.'])
 })
 
+test('ignores terminal focus escape sequences when tracking draft input', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Use /skills to list available skills\n')
+  interceptor.observeInput('\u001b[O')
+  interceptor.observeInput('hello there')
+  interceptor.observeInput('\u001b[I')
+
+  assert.equal(interceptor.inputBuffer, 'hello there')
+
+  interceptor.activeAssistant = 'codex'
+  interceptor.pendingResponse = true
+  interceptor.observeOutput('hello there\n› Use /skills to list available skills\n')
+
+  assert.equal(interceptor.flush(), null)
+  assert.deepEqual(emitted, [])
+})
+
 test('does not emit duplicates when flushed repeatedly after completion', () => {
   const { interceptor, emitted } = createInterceptor()
 
