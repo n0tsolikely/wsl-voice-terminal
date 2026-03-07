@@ -852,6 +852,19 @@
       return
     }
 
+    if (
+      statusOverride?.message &&
+      statusOverride.tone !== 'error' &&
+      statusElement?.textContent &&
+      (statusOverride.message !== message || statusOverride.tone !== tone)
+    ) {
+      vaporizeBubble(statusElement, {
+        durationMs: 560,
+        particleSize: 3,
+        reason: 'status-replace'
+      })
+    }
+
     clearStatusTimer()
 
     const sticky = options.sticky ?? tone === 'error'
@@ -899,10 +912,8 @@
         tone: statusOverride.tone
       })
       vaporizeBubble(statusElement, {
-        durationMs: 680,
-        particleSize: 2,
-        travel: 36,
-        gravity: 14,
+        durationMs: 560,
+        particleSize: 3,
         reason: 'status-clear'
       })
     }
@@ -929,10 +940,8 @@
       tone: statusOverride.tone
     })
     vaporizeBubble(statusElement, {
-      durationMs: 680,
-      particleSize: 2,
-      travel: 36,
-      gravity: 14,
+      durationMs: 560,
+      particleSize: 3,
       reason: 'status-timeout'
     })
     statusOverride = null
@@ -2687,10 +2696,9 @@
     const items = Array.from(replyHistoryElement.querySelectorAll('.replyItem'))
     items.forEach((item, index) => {
       vaporizeBubble(item, {
-        durationMs: 680,
+        durationMs: 620,
         particleSize: 2,
-        travel: 38,
-        gravity: 16,
+        travel: 32,
         reason: 'reply-history-hide',
         delayMs: index * 34
       })
