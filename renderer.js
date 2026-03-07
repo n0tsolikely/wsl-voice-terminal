@@ -2728,7 +2728,8 @@
           ok: Boolean(result?.ok),
           method: result?.method || '',
           particleCount: Number(result?.particleCount || 0),
-          reason: options.reason || ''
+          reason: options.reason || '',
+          errorMessage: result?.errorMessage || ''
         })
       })
       .catch((error) => {
