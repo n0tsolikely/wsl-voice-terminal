@@ -104,6 +104,8 @@ See also:
 - [docs/developer_dictionary.md](docs/developer_dictionary.md)
 - [docs/hallucination_map.md](docs/hallucination_map.md)
 - [docs/github_metadata.md](docs/github_metadata.md)
+- [docs/runtime-events.md](docs/runtime-events.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Speech
 
@@ -137,6 +139,17 @@ Useful commands:
 - `npm run doctor`
 - inspect `latest.jsonl`
 - inspect the session-specific `YYYYMMDD-HHMMSS-PID.jsonl` file next to it
+
+## Screenshots / GIFs
+
+Recommended visuals for the GitHub page:
+
+- main terminal window with the compact voice drawer open
+- a short clip of `PTT`, `Click`, and `Auto` mode switching
+- a short clip of assistant response replay bubbles appearing and being replayed
+- a short clip of runtime-log inspection during debugging
+
+See [docs/media/README.md](docs/media/README.md) for the suggested asset list.
 
 ## Updates
 
