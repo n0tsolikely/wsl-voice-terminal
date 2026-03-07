@@ -14,6 +14,20 @@ test('normalizeTerminalText strips ANSI escapes and backspaces', () => {
   assert.equal(output, 'hello\nprompt>')
 })
 
+test('normalizeTerminalText expands cursor movement redraws into readable spacing and lines', () => {
+  const input = [
+    '\u001b[43;3HCurrent dir:\u001b[43;17H/mnt/c/Users/peter',
+    '\u001b[44;3HGit repo\u001b[44;12Hnearby',
+    '\u001b[45;3H? for shortcuts'
+  ].join('')
+
+  const output = normalizeTerminalText(input)
+
+  assert.match(output, /Current dir:\n\/mnt\/c\/Users\/peter/)
+  assert.match(output, /Git repo\nnearby/)
+  assert.match(output, /\? for shortcuts/)
+})
+
 test('stripCodeBlocks removes fenced code content', () => {
   const input = 'Before\n```js\nconsole.log("x")\n```\nAfter'
   const output = stripCodeBlocks(input)
@@ -83,6 +97,24 @@ test('extractSpeechText ignores Codex progress chrome and command tree lines', (
   const output = extractSpeechText(input)
 
   assert.equal(output, 'I fixed the clipboard shortcuts and compacted the voice drawer.')
+})
+
+test('extractSpeechText ignores claude cursor-redraw context and token lines', () => {
+  const input = [
+    'Current dir: /mnt/c/Users/peter',
+    'Git repo nearby',
+    '(6m 37s · ↓ 524 tokens)',
+    '',
+    'Here is the actual assistant answer.',
+    '',
+    'It should be spoken cleanly.',
+    '',
+    '? for shortcuts'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'Here is the actual assistant answer. It should be spoken cleanly.')
 })
 
 test('extractSpeechText strips decorative bullet markers from real reply text', () => {
@@ -257,7 +289,7 @@ test('extractSpeechText keeps intro text when a short heading introduces a later
 
   assert.equal(
     output,
-    "I'm checking the current workspace state so I can answer concretely instead of guessing. Right now, not much. We are sitting in the Windows home directory, not an active repo root. Current dir: /mnt/c/Users/peter Git repo found nearby: /mnt/c/Users/peter/film_crew Synapse is not engaged here. So the concrete answer is: no repo-specific workflow is active yet."
+    "I'm checking the current workspace state so I can answer concretely instead of guessing. Right now, not much. We are sitting in the Windows home directory, not an active repo root. Synapse is not engaged here. So the concrete answer is: no repo-specific workflow is active yet."
   )
 })
 
