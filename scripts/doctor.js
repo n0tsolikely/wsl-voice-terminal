@@ -88,6 +88,16 @@ function hasNodePtyDependency(pkg) {
   return Boolean(pkg?.dependencies?.['node-pty'] || pkg?.optionalDependencies?.['node-pty'])
 }
 
+function checkNodePtyUsable(repoRoot) {
+  const validator = path.join(repoRoot, 'scripts', 'check-node-pty.js')
+  if (!fs.existsSync(validator)) {
+    return null
+  }
+
+  const output = run(`node "${validator}" --quiet`)
+  return output !== null
+}
+
 function getPythonInfo() {
   const py311 = run('py -3.11 --version')
   if (py311) {
@@ -97,6 +107,30 @@ function getPythonInfo() {
   if (python) {
     return { ok: true, label: python }
   }
+  return { ok: false, label: null }
+}
+
+function getNpmInfo() {
+  if (process.env.npm_lifecycle_event || process.env.npm_command) {
+    return {
+      ok: true,
+      label: 'available via current npm script context'
+    }
+  }
+
+  const npmExecPath = process.env.npm_execpath
+  if (npmExecPath && fs.existsSync(npmExecPath)) {
+    const output = run(`"${process.execPath}" "${npmExecPath}" -v`)
+    if (output) {
+      return { ok: true, label: output }
+    }
+  }
+
+  const npmVersion = run('npm -v')
+  if (npmVersion) {
+    return { ok: true, label: npmVersion }
+  }
+
   return { ok: false, label: null }
 }
 
@@ -149,6 +183,8 @@ const repoRoot = findRepoRoot(process.cwd()) || process.cwd()
 const pkgPath = path.join(repoRoot, 'package.json')
 const hasPackage = fs.existsSync(pkgPath)
 const pkg = hasPackage ? JSON.parse(fs.readFileSync(pkgPath, 'utf8')) : null
+const runtimeDir = path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-runtime`)
+const latestRuntimeLog = path.join(runtimeDir, 'latest.jsonl')
 
 let warnCount = 0
 let failCount = 0
@@ -160,11 +196,18 @@ if (hasPackage) {
   log('WARN', `package.json not found. Run this from the repo root. Using ${repoRoot}`)
 }
 
+if (process.platform === 'win32') {
+  log('OK', 'Platform detected: win32')
+} else {
+  warnCount += 1
+  log('WARN', `Platform detected: ${process.platform}. This app runs on Windows and launches wsl.exe from there.`)
+}
+
 log('OK', `Node detected: ${process.version}`)
 
-const npmVersion = run('npm -v')
-if (npmVersion) {
-  log('OK', `npm detected: ${npmVersion}`)
+const npmInfo = getNpmInfo()
+if (npmInfo.ok) {
+  log('OK', `npm detected: ${npmInfo.label}`)
 } else {
   failCount += 1
   log('FAIL', 'npm not found on PATH')
@@ -241,8 +284,12 @@ if (fs.existsSync(nodeModulesPath)) {
 
 const nodePtyBinary = path.join(repoRoot, 'node_modules', 'node-pty', 'build', 'Release', 'pty.node')
 if (hasNodePtyDependency(pkg)) {
-  if (fs.existsSync(nodePtyBinary)) {
-    log('OK', 'node-pty native module built')
+  const nodePtyUsable = checkNodePtyUsable(repoRoot)
+  if (nodePtyUsable) {
+    log('OK', 'node-pty loads correctly')
+  } else if (fs.existsSync(nodePtyBinary)) {
+    warnCount += 1
+    log('WARN', 'node-pty binary exists, but load validation did not pass')
   } else {
     failCount += 1
     log('FAIL', 'node-pty native module missing (run npm run rebuild:native)')
@@ -267,6 +314,22 @@ if (fs.existsSync(venvWin) || fs.existsSync(venvPosix)) {
   warnCount += 1
   log('WARN', 'Local Whisper venv missing')
 }
+
+if (fs.existsSync(runtimeDir)) {
+  log('OK', `Runtime log dir present: ${runtimeDir}`)
+} else {
+  warnCount += 1
+  log('WARN', `Runtime log dir missing: ${runtimeDir}`)
+}
+
+if (fs.existsSync(latestRuntimeLog)) {
+  log('OK', `Latest runtime log found: ${latestRuntimeLog}`)
+} else {
+  warnCount += 1
+  log('WARN', `Latest runtime log missing: ${latestRuntimeLog}`)
+}
+
+log('INFO', 'Microphone checks require launching the Electron app because they are runtime permission/device checks.')
 
 if (hasStartScript(pkg)) {
   log('OK', 'package.json start script found')

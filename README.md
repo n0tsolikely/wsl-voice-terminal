@@ -1,8 +1,14 @@
 # WSL Voice Terminal
 
-Just WSL with a mic... thats it. I was sick of typing in the terminal but i wanted the terminal simplicity with codex/claude code
+Windows-first Electron wrapper around `wsl.exe` with a real terminal, mic-driven dictation, and spoken assistant replies.
 
-An Electron wrapper around `wsl.exe` with a real terminal, local mic controls, and spoken responses.
+It keeps the normal terminal workflow for Codex or Claude Code, but adds:
+
+- push-to-talk, click-to-record, and always-listening voice modes
+- developer-aware dictation cleanup before terminal injection
+- assistant response replay bubbles with TTS
+- local Whisper and local Windows TTS fallbacks
+- runtime JSONL logging for live debugging
 
 Created by Peter J. Reynolds (`notsolikely` / GitHub: `n0tsolikely`), building under Synapse Guild.
 
@@ -56,11 +62,48 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 3. Optional: `npm run install:local-whisper` if you want to prewarm local Whisper before the first launch
 4. Run `launch-wsl-voice-terminal.bat`
 
+## Developer Commands
+
+- `npm run doctor`
+  environment and dependency diagnostics
+- `npm test`
+  full Node test suite
+- `npm run test:unit`
+  same test suite, explicit developer alias
+- `npm run rebuild:native`
+  rebuild `node-pty` against the installed Electron version
+- `npm run install:local-whisper`
+  install or refresh the optional local Whisper runtime
+
 ## Project Layout
 
 - `install.ps1`: bootstrapper and setup
 - `scripts/doctor.js`: diagnostics (`npm run doctor`)
 - `launch-wsl-voice-terminal.bat`: app launcher
+
+## Architecture At A Glance
+
+- `main.js`
+  Electron main process, PTY wiring, STT/TTS services, update checks, runtime logging
+- `preload.js`
+  safe IPC bridge for the renderer
+- `renderer.js`
+  terminal UI, mic controls, replay bubbles, and transient bubble behavior
+- `lib/terminal-session.js`
+  `node-pty` wrapper that launches `wsl.exe`
+- `lib/speech-relay.js`
+  assistant response replay queue
+- `lib/codex-speech-interceptor.js`
+  decides when terminal output is a completed assistant reply
+- `lib/terminal-speech.js`
+  strips prompt chrome, tool chatter, and shell noise before TTS
+
+See also:
+
+- [docs/architecture.md](docs/architecture.md)
+- [docs/developer_dictionary.md](docs/developer_dictionary.md)
+- [docs/hallucination_map.md](docs/hallucination_map.md)
+- [docs/github_metadata.md](docs/github_metadata.md)
 
 ## Speech
 
@@ -71,6 +114,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 - Local fallback defaults to `base.en` on `cpu` with `int8` compute for Windows reliability. You can override that in `.env`.
 - Local Whisper installs into `.local-whisper-venv` and downloads model/cache files locally. Those files are ignored by git and are not shipped in the repo.
 - Local TTS uses Windows PowerShell and `System.Speech`, so it is Windows-only.
+
+## Response Replay
+
+Response replay is the path that reads assistant replies back to you.
+
+- PTY output is inspected by `lib/codex-speech-interceptor.js`
+- terminal text is cleaned by `lib/terminal-speech.js`
+- finalized assistant text is queued by `lib/speech-relay.js`
+- the renderer shows replayable reply bubbles and can play the speech automatically
+
+The system is designed to speak the assistant reply, not shell prompts, tool output, diffs, or your unsent draft text.
+
+## Runtime Logs
+
+Live debugging uses JSONL runtime logs written to a sibling folder:
+
+- `wsl-voice-terminal-runtime/latest.jsonl`
+
+Useful commands:
+
+- `npm run doctor`
+- inspect `latest.jsonl`
+- inspect the session-specific `YYYYMMDD-HHMMSS-PID.jsonl` file next to it
 
 ## Updates
 
@@ -110,6 +176,21 @@ Future distribution should prefer a signed installer or a signed PowerShell scri
 - The app will switch speech-to-text to local Whisper automatically.
 - If you want OpenAI again, fix `OPENAI_API_KEY` in `.env` and restart the app.
 - Leaving `.env` at `OPENAI_API_KEY=your_key_here` counts as no key and will stay local-only.
+
+### Runtime debugging
+
+- Run `npm run doctor` first.
+- Check `wsl-voice-terminal-runtime/latest.jsonl`.
+- For speech issues, inspect:
+  - `speech.finalized`
+  - `speech.audio`
+  - `speech.playback_started`
+  - `speech.playback_finished`
+  - `speech.analysis`
+  - `speech.analysis_rejected`
+  - `speech.analysis_finalized`
+  - `ui.status`
+  - `ui.vaporize`
 
 ### WSL is missing
 
