@@ -5,6 +5,16 @@ const path = require('node:path')
 const pty = require('node-pty')
 const packageManifest = require('./package.json')
 const { AppUpdater, buildUpdatePrompt } = require('./lib/app-updater')
+const {
+  normalizeClipboardText,
+  normalizePreviewSpeechPayload,
+  normalizePtyDimensions,
+  normalizePtyInput,
+  normalizeRuntimeLogPayload,
+  normalizeSpeechEnabled,
+  normalizeTranscribePayload,
+  normalizeUpdateAction
+} = require('./lib/ipc-contracts')
 const { LocalTtsClient } = require('./lib/local-tts-client')
 const { LocalWhisperClient } = require('./lib/local-whisper-client')
 const { OpenAiAudioClient, isInvalidApiKeyError } = require('./lib/openai-audio-client')
@@ -154,23 +164,24 @@ app.whenReady().then(() => {
   configureMediaPermissions(session.defaultSession)
 
   ipcMain.handle('pty:start', async (_event, dimensions) => {
-    terminalSession?.start(dimensions)
+    terminalSession?.start(normalizePtyDimensions(dimensions))
     queueStartupUpdateCheck()
     return { ok: true }
   })
 
   ipcMain.on('pty:input', (_event, data) => {
-    terminalSession?.write(data)
+    terminalSession?.write(normalizePtyInput(data))
   })
 
   ipcMain.on('pty:resize', (_event, dimensions) => {
-    terminalSession?.resize(dimensions)
+    terminalSession?.resize(normalizePtyDimensions(dimensions))
   })
 
   ipcMain.on('runtime:log', (_event, payload = {}) => {
     const window = BrowserWindow.fromWebContents(_event.sender)
+    const normalizedPayload = normalizeRuntimeLogPayload(payload)
 
-    runtimeLogger.log(payload.type || 'renderer.event', payload.payload || {}, {
+    runtimeLogger.log(normalizedPayload.type, normalizedPayload.payload, {
       component: 'renderer',
       processType: 'renderer',
       webContentsId: _event.sender.id,
@@ -185,11 +196,13 @@ app.whenReady().then(() => {
   ipcMain.handle('clipboard:read-text', async () => clipboard.readText())
 
   ipcMain.handle('clipboard:write-text', async (_event, text) => {
-    clipboard.writeText(String(text || ''))
+    clipboard.writeText(normalizeClipboardText(text))
     return { ok: true }
   })
 
   ipcMain.handle('app:update-response', async (_event, action) => {
+    const normalizedAction = normalizeUpdateAction(action)
+
     if (!activeUpdateInfo) {
       return {
         ok: true,
@@ -197,9 +210,9 @@ app.whenReady().then(() => {
       }
     }
 
-    if (action !== 'accept') {
+    if (normalizedAction !== 'accept') {
       runtimeLogger.log('app.update_prompt_dismissed', {
-        action: String(action || 'dismiss')
+        action: normalizedAction
       })
       activeUpdateInfo = null
 
@@ -256,12 +269,13 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('stt:transcribe', async (_event, payload) => {
+    const normalizedPayload = normalizeTranscribePayload(payload)
     const requestedProvider = openAIClient.hasApiKey() ? 'openai' : 'local-whisper'
 
     runtimeLogger.log('stt.request', {
       provider: requestedProvider,
       apiKeyState: openAIClient.getApiKeyState().reason,
-      mimeType: payload.mimeType || ''
+      mimeType: normalizedPayload.mimeType || ''
     })
 
     try {
@@ -269,7 +283,10 @@ app.whenReady().then(() => {
         return await transcribeWithLocalWhisper(payload, openAIClient.getApiKeyState().reason)
       }
 
-      const transcript = await openAIClient.transcribeAudio(payload.audioBuffer, payload.mimeType)
+      const transcript = await openAIClient.transcribeAudio(
+        normalizedPayload.audioBuffer,
+        normalizedPayload.mimeType
+      )
 
       runtimeLogger.log('stt.success', {
         provider: 'openai',
@@ -296,28 +313,30 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('speech:preview', async (_event, payload) => {
+    const normalizedPayload = normalizePreviewSpeechPayload(payload)
+
     runtimeLogger.log('speech.preview_request', {
-      text: payload.text || ''
+      text: normalizedPayload.text || ''
     })
 
-    const audioPayload = await ttsService.synthesizeSpeech(payload.text || '')
+    const audioPayload = await ttsService.synthesizeSpeech(normalizedPayload.text || '')
 
     runtimeLogger.log('speech.preview_ready', {
       provider: audioPayload?.provider || '',
       mimeType: audioPayload?.mimeType || '',
-      text: payload.text || ''
+      text: normalizedPayload.text || ''
     })
 
     return {
       audioBase64: audioPayload?.audioBuffer ? audioPayload.audioBuffer.toString('base64') : '',
       mimeType: audioPayload?.mimeType || 'audio/mpeg',
       provider: audioPayload?.provider || '',
-      text: payload.text || ''
+      text: normalizedPayload.text || ''
     }
   })
 
   ipcMain.handle('speech:set-enabled', async (_event, enabled) => {
-    const normalizedEnabled = Boolean(enabled)
+    const normalizedEnabled = normalizeSpeechEnabled(enabled)
 
     terminalSession?.setAutoReplySpeechEnabled(normalizedEnabled)
     runtimeLogger.log('speech.auto_reply_toggled', {
@@ -510,6 +529,7 @@ function warmLocalWhisperRuntime() {
 }
 
 async function transcribeWithLocalWhisper(payload, fallbackReason = '') {
+  const normalizedPayload = normalizeTranscribePayload(payload)
   const reason = fallbackReason || openAIClient.getApiKeyState().reason
 
   if (reason && reason !== 'configured') {
@@ -517,8 +537,8 @@ async function transcribeWithLocalWhisper(payload, fallbackReason = '') {
   }
 
   const transcript = await localWhisperClient.transcribeAudio(
-    payload.audioBuffer,
-    payload.mimeType,
+    normalizedPayload.audioBuffer,
+    normalizedPayload.mimeType,
     (message) => {
       forwardLocalWhisperStatus(message)
     }

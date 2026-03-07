@@ -225,8 +225,8 @@ const pythonInfo = getPythonInfo()
 if (pythonInfo.ok) {
   log('OK', `Python detected: ${pythonInfo.label}`)
 } else {
-  failCount += 1
-  log('FAIL', 'Python not found (local Whisper needs Python 3.11)')
+  warnCount += 1
+  log('WARN', 'Python not found. Local Whisper fallback setup will be unavailable until Python 3.11 is installed.')
 }
 
 const wslSystemPath = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'wsl.exe')
@@ -256,6 +256,7 @@ if (fs.existsSync(envPath)) {
 
 const envVars = parseEnvFile(envPath)
 const envKey = envVars.get('OPENAI_API_KEY') || process.env.OPENAI_API_KEY || ''
+const hasValidOpenAiKey = Boolean(envKey) && !isPlaceholderKey(envKey)
 if (!envKey) {
   warnCount += 1
   log('WARN', 'OPENAI_API_KEY missing')
@@ -308,11 +309,20 @@ if (fs.existsSync(whisperReq)) {
 
 const venvWin = path.join(repoRoot, '.local-whisper-venv', 'Scripts', 'python.exe')
 const venvPosix = path.join(repoRoot, '.local-whisper-venv', 'bin', 'python')
-if (fs.existsSync(venvWin) || fs.existsSync(venvPosix)) {
+const localWhisperVenvPresent = fs.existsSync(venvWin) || fs.existsSync(venvPosix)
+if (localWhisperVenvPresent) {
   log('OK', 'Local Whisper venv present')
 } else {
   warnCount += 1
   log('WARN', 'Local Whisper venv missing')
+}
+
+if (!hasValidOpenAiKey && !localWhisperVenvPresent) {
+  failCount += 1
+  log('FAIL', 'No speech-to-text path is ready. OPENAI_API_KEY is not usable and the local Whisper venv is missing.')
+} else if (!hasValidOpenAiKey && !pythonInfo.ok) {
+  failCount += 1
+  log('FAIL', 'No speech-to-text recovery path is available. Install Python 3.11 for local Whisper or configure a valid OPENAI_API_KEY.')
 }
 
 if (fs.existsSync(runtimeDir)) {
