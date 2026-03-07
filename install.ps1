@@ -122,6 +122,25 @@ function Test-NodePtyBuild([string]$RepoDir) {
   return Test-Path $ptyBinary
 }
 
+function Test-NodePtyUsable([string]$RepoDir) {
+  $validatorPath = Join-Path $RepoDir 'scripts\check-node-pty.js'
+
+  if (-not (Test-Path $validatorPath)) {
+    return (Test-NodePtyBuild -RepoDir $RepoDir)
+  }
+
+  if (-not (Test-Node)) {
+    return (Test-NodePtyBuild -RepoDir $RepoDir)
+  }
+
+  try {
+    $exitCode = Invoke-Checked -FilePath 'node' -Arguments @($validatorPath, '--quiet') -WorkingDirectory $RepoDir -IgnoreExitCode -PassThruExitCode
+    return ($exitCode -eq 0)
+  } catch {
+    return $false
+  }
+}
+
 function Get-ElectronRebuildPath([string]$RepoDir) {
   $cmdPath = Join-Path $RepoDir 'node_modules\.bin\electron-rebuild.cmd'
   if (Test-Path $cmdPath) {
@@ -739,17 +758,8 @@ function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
     Stop-Install 'npm is not available on PATH. Restart PowerShell after Node.js installs, then rerun install.ps1.'
   }
 
-  $vsInstall = Ensure-VsBuildTools -WingetPath $WingetPath
-  if ($null -eq $vsInstall -or -not $vsInstall.PSObject.Properties['Installed']) {
-    $fallbackVsState = New-VsCppState -Source 'fallback'
-    $vsInstall = New-VsInstallStatus -Result $fallbackVsState
-  }
-
-  if ($vsInstall.AutoInstallAttempted -and -not $vsInstall.InstallCommandSucceeded) {
-    Stop-Install 'Automatic Visual Studio Build Tools installation failed. Open Visual Studio Build Tools and ensure "Desktop development with C++" (or equivalent VC++ toolset components) is installed, then rerun install.ps1.'
-  }
-
   $nodePtyRequired = Test-NodePtyDependency -RepoDir $RepoDir
+  $vsInstall = New-VsInstallStatus -Result (New-VsCppState -Source 'not-required')
 
   Write-Install 'Running npm install'
   $npmSucceeded = $false
@@ -762,26 +772,13 @@ function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
     Write-Warn ("npm install failed: {0}" -f $_.Exception.Message)
   }
 
-  if (-not $npmSucceeded -and $vsInstall.Installed -and $vsInstall.ToolsetReady) {
-    Write-Install 'Retrying npm install after Visual Studio Build Tools install'
-    try {
-      Invoke-Checked -FilePath 'npm' -Arguments @('install') -WorkingDirectory $RepoDir
-      Write-Pass 'npm install completed'
-      $npmSucceeded = $true
-    } catch {
-      Write-Warn ("npm install retry failed: {0}" -f $_.Exception.Message)
-    }
-  }
-
-  if (-not $npmSucceeded -and $vsInstall.Installed -and -not $vsInstall.ToolsetReady) {
-    Stop-Install (Get-VsToolsetMissingFailMessage)
-  }
-
   $needsRebuild = $false
   if ($nodePtyRequired) {
-    if (-not (Test-NodePtyBuild -RepoDir $RepoDir)) {
+    if (-not (Test-NodePtyUsable -RepoDir $RepoDir)) {
       $needsRebuild = $true
-      Write-Warn 'node-pty native build not detected. Attempting rebuild.'
+      Write-Warn 'node-pty is not loadable in the current install. Attempting native rebuild.'
+    } else {
+      Write-Pass 'node-pty module validation passed'
     }
   }
 
@@ -790,6 +787,31 @@ function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
   }
 
   if ($needsRebuild) {
+    $vsInstall = Ensure-VsBuildTools -WingetPath $WingetPath
+    if ($null -eq $vsInstall -or -not $vsInstall.PSObject.Properties['Installed']) {
+      $fallbackVsState = New-VsCppState -Source 'fallback'
+      $vsInstall = New-VsInstallStatus -Result $fallbackVsState
+    }
+
+    if ($vsInstall.AutoInstallAttempted -and -not $vsInstall.InstallCommandSucceeded) {
+      Stop-Install 'Automatic Visual Studio Build Tools installation failed. Open Visual Studio Build Tools and ensure "Desktop development with C++" (or equivalent VC++ toolset components) is installed, then rerun install.ps1.'
+    }
+
+    if ($vsInstall.VsInstalled -and -not $vsInstall.ToolsetReady) {
+      Stop-Install (Get-VsToolsetMissingFailMessage)
+    }
+
+    if (-not $npmSucceeded -and $vsInstall.Installed -and $vsInstall.ToolsetReady) {
+      Write-Install 'Retrying npm install after Visual Studio Build Tools install'
+      try {
+        Invoke-Checked -FilePath 'npm' -Arguments @('install') -WorkingDirectory $RepoDir
+        Write-Pass 'npm install completed'
+        $npmSucceeded = $true
+      } catch {
+        Write-Warn ("npm install retry failed: {0}" -f $_.Exception.Message)
+      }
+    }
+
     if (Test-PackageScript -RepoDir $RepoDir -ScriptName 'rebuild:native') {
       Write-Install 'Attempting npm run rebuild:native'
       try {
@@ -821,7 +843,7 @@ function Run-NpmInstall([string]$RepoDir, [string]$WingetPath) {
   }
 
   if ($nodePtyRequired) {
-    if (Test-NodePtyBuild -RepoDir $RepoDir) {
+    if (Test-NodePtyUsable -RepoDir $RepoDir) {
       Write-Pass 'node-pty native module is ready'
     } else {
       Stop-Install ("node-pty failed to build. {0}" -f (Get-VsCppGuidance))
