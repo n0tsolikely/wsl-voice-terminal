@@ -865,6 +865,15 @@
       expiresAt: durationMs ? performance.now() + durationMs : 0
     }
 
+    logRuntime('ui.status', {
+      action: 'set',
+      message,
+      tone,
+      sticky,
+      durationMs,
+      persistDuringBusy: Boolean(options.persistDuringBusy)
+    })
+
     if (!sticky && durationMs > 0) {
       statusOverrideTimer = window.setTimeout(() => {
         if (statusOverride?.expiresAt && statusOverride.expiresAt <= performance.now()) {
@@ -884,11 +893,17 @@
 
     clearStatusTimer()
     if (statusOverride?.message && statusOverride.tone !== 'error') {
+      logRuntime('ui.status', {
+        action: 'clear',
+        message: statusOverride.message,
+        tone: statusOverride.tone
+      })
       vaporizeBubble(statusElement, {
         durationMs: 680,
         particleSize: 2,
         travel: 36,
-        gravity: 14
+        gravity: 14,
+        reason: 'status-clear'
       })
     }
     statusOverride = null
@@ -908,11 +923,17 @@
     }
 
     clearStatusTimer()
+    logRuntime('ui.status', {
+      action: 'timeout',
+      message: statusOverride.message,
+      tone: statusOverride.tone
+    })
     vaporizeBubble(statusElement, {
       durationMs: 680,
       particleSize: 2,
       travel: 36,
-      gravity: 14
+      gravity: 14,
+      reason: 'status-timeout'
     })
     statusOverride = null
     renderStatus()
@@ -2670,6 +2691,7 @@
         particleSize: 2,
         travel: 38,
         gravity: 16,
+        reason: 'reply-history-hide',
         delayMs: index * 34
       })
     })
@@ -2686,7 +2708,10 @@
       tagName: element.tagName.toLowerCase(),
       className: element.className || '',
       durationMs: options.durationMs || 0,
-      particleSize: options.particleSize || 0
+      particleSize: options.particleSize || 0,
+      travel: options.travel || 0,
+      gravity: options.gravity || 0,
+      reason: options.reason || ''
     })
     vaporizeApi.vaporizeElement(element, options).catch(() => {})
   }
