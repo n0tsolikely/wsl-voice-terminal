@@ -214,3 +214,26 @@ test('extractSpeechText keeps full multi-paragraph replies instead of truncating
     'Yes. Your last message came through clearly. Only minor issue: it merged interfaceHey without a space, but the rest was easy to understand. The spacing is fixed now and future replies should read cleanly.'
   )
 })
+
+test('extractSpeechText ignores earlier longer assistant chatter when a final answer appears later', () => {
+  const input = [
+    'I am checking the files and tracing the runtime behavior now.',
+    '',
+    'I am also reviewing the renderer and the speech relay before I finalize anything.',
+    '',
+    '● Bash(cd /repo && node --test)',
+    '',
+    'The actual answer is ready now.',
+    '',
+    'Only this final reply should be spoken.',
+    '',
+    '❯ '
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'The actual answer is ready now. Only this final reply should be spoken.'
+  )
+})
