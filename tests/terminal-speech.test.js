@@ -455,3 +455,24 @@ test('extractSpeechText keeps conversational prose around runtime-style prompt r
     'Sure. Here’s a quick demo. Before code: this is a tiny Python snippet that logs a start message, does a simple calculation, and prints the result. After code: if you run it, it prints a start line and then Result: 55.'
   )
 })
+
+test('extractSpeechText keeps a mid-run reply when redraw separators are whitespace-only lines', () => {
+  const input = [
+    '',
+    '',
+    '• Mid-run reply: I made the temp code edit and generated the diff successfully; next step is deleting the test files so the workspace is clean again.',
+    '                                                                                                                                                                                   ',
+    '◦ Working (21s • esc to interrupt)',
+    '                                                                                                                                                                                   ',
+    '› Improve documentation in @filename',
+    '                                                                                                                                                                                   ',
+    '  gpt-5.3-codex medium · 99% left · /mnt/c/Users/peter'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Mid-run reply: I made the temp code edit and generated the diff successfully; next step is deleting the test files so the workspace is clean again.'
+  )
+})
