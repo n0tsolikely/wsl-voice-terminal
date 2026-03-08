@@ -3,7 +3,7 @@ const assert = require('node:assert/strict')
 
 const { CodexSpeechInterceptor } = require('../lib/codex-speech-interceptor')
 
-function createInterceptor() {
+function createInterceptor(options = {}) {
   const emitted = []
   const interceptor = new CodexSpeechInterceptor(
     (text) => {
@@ -12,7 +12,8 @@ function createInterceptor() {
     {
       schedule: () => 1,
       clearScheduled: () => {},
-      idleMs: 1
+      idleMs: 1,
+      ...options
     }
   )
 
@@ -187,6 +188,32 @@ test('finalizes a Codex reply when the prompt redraw happens before a trailing f
   )
   assert.deepEqual(emitted, [
     "I'm doing well today, staying focused and ready to help with whatever you need. How are you doing?"
+  ])
+})
+
+test('keeps the opening sentence when heavy footer redraw noise happens before trailing speech', () => {
+  const { interceptor, emitted } = createInterceptor({
+    maxCaptureChars: 30000
+  })
+
+  interceptor.observeOutput('OpenAI Codex\n› Explain this codebase\n')
+  interceptor.observeInput('sync it\r')
+  interceptor.observeOutput(
+    'That makes sense, and it is a solid workflow if you keep one source of truth per update.\n'
+  )
+  interceptor.observeOutput(
+    'gpt-5.3-codex medium · 100% left · /mnt/c/Users/peter\n'.repeat(1200)
+  )
+  interceptor.observeOutput(
+    'I can also script this so one command does the whole sync with guardrails (no accidental overwrite, shows exactly what changed).\n› Explain this codebase\n'
+  )
+
+  assert.equal(
+    interceptor.flush(),
+    'That makes sense, and it is a solid workflow if you keep one source of truth per update. I can also script this so one command does the whole sync with guardrails (no accidental overwrite, shows exactly what changed).'
+  )
+  assert.deepEqual(emitted, [
+    'That makes sense, and it is a solid workflow if you keep one source of truth per update. I can also script this so one command does the whole sync with guardrails (no accidental overwrite, shows exactly what changed).'
   ])
 })
 
