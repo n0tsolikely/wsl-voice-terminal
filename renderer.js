@@ -2549,7 +2549,7 @@
       return
     }
 
-    trimReplyHistory()
+    trimReplyHistory(replyMessages, REPLY_HISTORY_LIMIT)
     revealReplyHistory()
     renderReplyHistory()
   }
@@ -2559,7 +2559,7 @@
       return
     }
 
-    trimReplyHistory()
+    trimReplyHistory(replyMessages, REPLY_HISTORY_LIMIT)
     revealReplyHistory()
     renderReplyHistory()
   }
