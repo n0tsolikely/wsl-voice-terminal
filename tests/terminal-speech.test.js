@@ -166,6 +166,35 @@ test('extractSpeechText ignores Codex progress chrome and command tree lines', (
   assert.equal(output, 'I fixed the clipboard shortcuts and compacted the voice drawer.')
 })
 
+test('extractSpeechText ignores background terminal status chrome', () => {
+  const input = [
+    '1 background terminal running · /ps to view · /clean to close',
+    '',
+    'I confirmed the workspace and I’m creating a temp file now.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I confirmed the workspace and I’m creating a temp file now.')
+})
+
+test('extractSpeechText ignores bare filenames and long ls permission lines', () => {
+  const input = [
+    'wsl-voice-terminal-runtime',
+    '',
+    'rwxrwxrwx 1 notsolikely notsolikely 209 Mar 8 14:32 /mnt/c/Users/peter/voice_terminal_demo.py',
+    '',
+    'File is created. I’m editing it now with a few real code changes, then I’ll print the diff.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'File is created. I’m editing it now with a few real code changes, then I’ll print the diff.'
+  )
+})
+
 test('extractSpeechText ignores claude cursor-redraw context and token lines', () => {
   const input = [
     'Current dir: /mnt/c/Users/peter',

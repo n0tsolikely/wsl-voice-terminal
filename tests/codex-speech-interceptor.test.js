@@ -217,6 +217,113 @@ test('keeps the opening sentence when heavy footer redraw noise happens before t
   ])
 })
 
+test('flushes conversational prose when a tool run starts', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Implement {feature}\n')
+  interceptor.observeInput('do the work\r')
+  interceptor.observeOutput(
+    'I confirmed the workspace and I’m creating a temp file now, then I’ll patch it and show a real unified diff.\n'
+  )
+  interceptor.observeOutput('• Ran pwd && ls -1\n└ /mnt/c/Users/peter\n')
+
+  assert.deepEqual(emitted, [
+    'I confirmed the workspace and I’m creating a temp file now, then I’ll patch it and show a real unified diff.'
+  ])
+
+  interceptor.observeOutput('Here is the final answer after the tool finished.\n› Implement {feature}\n')
+
+  assert.equal(interceptor.flush(), 'Here is the final answer after the tool finished.')
+  assert.deepEqual(emitted, [
+    'I confirmed the workspace and I’m creating a temp file now, then I’ll patch it and show a real unified diff.',
+    'Here is the final answer after the tool finished.'
+  ])
+})
+
+test('flushes conversational prose when approval UI starts', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Implement {feature}\n')
+  interceptor.observeInput('clean it up\r')
+  interceptor.observeOutput(
+    'Diff is ready and shown. Now I’m doing the cleanup phase: deleting the temp files I made and verifying they’re gone.\n'
+  )
+  interceptor.observeOutput(
+    'Would you like to run the following command?\n$ rm -f /tmp/demo.py\nPress enter to confirm or esc to cancel\n'
+  )
+
+  assert.deepEqual(emitted, [
+    'Diff is ready and shown. Now I’m doing the cleanup phase: deleting the temp files I made and verifying they’re gone.'
+  ])
+  assert.equal(interceptor.pendingResponse, true)
+})
+
+test('flushes conversational prose before diff output starts', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Implement {feature}\n')
+  interceptor.observeInput('show the diff\r')
+  interceptor.observeOutput(
+    'File is created. I’m editing it now with a few real code changes, then I’ll print the diff.\n'
+  )
+  interceptor.observeOutput('diff --git a/demo.py b/demo.py\n@@ -1,1 +1,1 @@\n+print("updated")\n')
+
+  assert.deepEqual(emitted, [
+    'File is created. I’m editing it now with a few real code changes, then I’ll print the diff.'
+  ])
+  assert.equal(interceptor.pendingResponse, true)
+})
+
+test('flushes multiple conversational segments in one long work session', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Implement {feature}\n')
+  interceptor.observeInput('run the workflow\r')
+  interceptor.observeOutput(
+    'I confirmed the workspace and I’m creating a temp file in /mnt/c/Users/peter now, then I’ll patch it and show a real unified diff.\n'
+  )
+  interceptor.observeOutput('• Ran pwd && ls -1\n└ /mnt/c/Users/peter\n')
+
+  interceptor.observeOutput(
+    'File is created. I’m editing it now with a few real code changes, then I’ll print the diff.\n'
+  )
+  interceptor.observeOutput('diff --git a/demo.py b/demo.py\n@@ -1,1 +1,1 @@\n+print("updated")\n')
+
+  interceptor.observeOutput(
+    'now I’m deleting it: done. both temp files are gone (No such file or directory on ls confirms cleanup). › 1 tab to queue message 100% context left\n'
+  )
+
+  interceptor.observeOutput(
+    'little response to end: test passed, your WSL voice terminal flow is working cleanly. › 1 tab to queue message 100% context left\n'
+  )
+
+  interceptor.observeOutput('Understood. I won’t run anything now. I’m just responding.\n› Implement {feature}\n')
+
+  assert.equal(
+    interceptor.flush(),
+    'Understood. I won’t run anything now. I’m just responding.'
+  )
+  assert.deepEqual(emitted, [
+    'I confirmed the workspace and I’m creating a temp file in /mnt/c/Users/peter now, then I’ll patch it and show a real unified diff.',
+    'File is created. I’m editing it now with a few real code changes, then I’ll print the diff.',
+    'I’m deleting it: done. both temp files are gone (No such file or directory on ls confirms cleanup).',
+    'little response to end: test passed, your WSL voice terminal flow is working cleanly.',
+    'Understood. I won’t run anything now. I’m just responding.'
+  ])
+})
+
+test('does not duplicate a spoken segment when the same tool boundary redraw repeats', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Implement {feature}\n')
+  interceptor.observeInput('run it\r')
+  interceptor.observeOutput('I confirmed the workspace and I’m creating a temp file now.\n')
+  interceptor.observeOutput('• Ran pwd && ls -1\n')
+  interceptor.observeOutput('• Ran pwd && ls -1\n')
+
+  assert.deepEqual(emitted, ['I confirmed the workspace and I’m creating a temp file now.'])
+})
+
 test('does not speak echoed user input when Codex redraws it before the reply', () => {
   const { interceptor, emitted } = createInterceptor()
 
@@ -308,7 +415,7 @@ test('finalizes Claude Code replies when the prompt and shortcuts footer return'
   assert.deepEqual(emitted, ["Hey! I've read the repo and I can help."])
 })
 
-test('does not finalize Claude Code tool confirmation prompts as completed replies', () => {
+test('flushes Claude Code narration before a tool confirmation prompt and still speaks the later final reply', () => {
   const { interceptor, emitted } = createInterceptor()
 
   interceptor.observeInput('claude\r')
@@ -324,7 +431,7 @@ test('does not finalize Claude Code tool confirmation prompts as completed repli
   )
 
   assert.equal(interceptor.flush(), null)
-  assert.deepEqual(emitted, [])
+  assert.deepEqual(emitted, ["I've absorbed the context and I am checking the repo."])
 
   interceptor.observeOutput(
     [
@@ -339,5 +446,8 @@ test('does not finalize Claude Code tool confirmation prompts as completed repli
 
   assert.match(finalized, /Here is the final answer after the tool finished\./)
   assert.doesNotMatch(finalized, /Esc to cancel/)
-  assert.equal(emitted.length, 1)
+  assert.deepEqual(emitted, [
+    "I've absorbed the context and I am checking the repo.",
+    'Here is the final answer after the tool finished.'
+  ])
 })
