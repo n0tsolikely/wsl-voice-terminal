@@ -55,6 +55,51 @@ test('extractSpeechText keeps conversational text and drops code blocks and prom
   assert.equal(output, 'Here is the change you need. It will keep the command line behavior intact.')
 })
 
+test('extractSpeechText keeps lead-in prose around unfenced CLI code output', () => {
+  const input = [
+    'Yep. Here is a random snippet plus normal text before and after so you can test that behavior.',
+    '',
+    'function fibonacci(n) {',
+    '  if (n < 0) throw new Error("n must be non-negative");',
+    '  if (n < 2) return n;',
+    '  let a = 0, b = 1;',
+    '  for (let i = 2; i <= n; i++) {',
+    '    [a, b] = [b, a + b];',
+    '  }',
+    '  return b;',
+    '}',
+    '',
+    'If TTV is configured right, it should read this surrounding text naturally and skip the code block.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Yep. Here is a random snippet plus normal text before and after so you can test that behavior. If TTV is configured right, it should read this surrounding text naturally and skip the code block.'
+  )
+})
+
+test('extractSpeechText drops unfenced shell script lines while keeping prose around them', () => {
+  const input = [
+    'Second pass: this line should be spoken before the script.',
+    '',
+    'now=$(date +%s)',
+    'echo "[$now] Starting script..."',
+    'echo "Hello, $name!"',
+    'echo "Done."',
+    '',
+    'This line should also be spoken after the script.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Second pass: this line should be spoken before the script. This line should also be spoken after the script.'
+  )
+})
+
 test('extractSpeechText returns empty for command-heavy output', () => {
   const input = [
     'diff --git a/file b/file',
