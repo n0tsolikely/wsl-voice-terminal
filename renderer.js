@@ -3,7 +3,9 @@
   const micStateApi = window.WslVoiceTerminalMicState
   const dictationApi = window.WslVoiceTerminalDictationBuffer
   const autoSpeechFilterApi = window.WslVoiceTerminalAutoSpeechFilter || null
+  const replyHistoryUiApi = window.WslVoiceTerminalReplyHistoryUi
   const vaporizeApi = window.WslVoiceTerminalVaporize || null
+  const voiceControlsUiApi = window.WslVoiceTerminalVoiceControlsUi
   const terminalElement = document.getElementById('terminal')
   const replyHistoryElement = document.getElementById('replyHistory')
   const controlPanel = document.getElementById('controlPanel')
@@ -61,6 +63,14 @@
     normalizeDictationText,
     replaceInterimDictation
   } = dictationApi
+  const {
+    attachReplyAudio,
+    renderReplyHistoryView,
+    shouldShowReplyHistory,
+    trimReplyHistory,
+    upsertReplyMessage
+  } = replyHistoryUiApi
+  const { formatModeLabel, renderVoiceControlsView } = voiceControlsUiApi
   const AUTO_MIN_START_THRESHOLD = 0.012
   const AUTO_MIN_CONTINUE_THRESHOLD = 0.008
   const AUTO_START_MARGIN = 0.004
@@ -997,82 +1007,31 @@
     const viewModel = getMicViewModel(micState)
     const modeDetail = getModeDetailText(viewModel)
     const autoModeSupported = supportsAutoMode()
-    const micDisabled =
-      !runtimeSupport.capture ||
-      isStartingRecording ||
-      micState.phase === MIC_PHASES.STOPPING ||
-      micState.phase === MIC_PHASES.TRANSCRIBING
 
-    controlPanel.dataset.mode = micState.mode
-    controlPanel.dataset.phase = micState.phase
-    controlPanel.dataset.autoStrategy = micState.autoStrategy
-    controlPanel.dataset.busy = String(isBusyMicPhase(micState.phase) || isStartingRecording)
-
-    modeButtons.forEach((button) => {
-      const isSelected = button.dataset.mode === micState.mode
-      const isAutoButton = button.dataset.mode === MIC_MODES.AUTO
-      const modeButtonLabel = getModeButtonLabel(button.dataset.mode, autoModeSupported)
-
-      button.dataset.selected = String(isSelected)
-      button.disabled =
-        !runtimeSupport.capture ||
-        isStartingRecording ||
-        viewModel.modeButtonsDisabled ||
-        (isAutoButton && !autoModeSupported)
-      button.dataset.supported = String(!isAutoButton || autoModeSupported)
-      button.setAttribute('aria-pressed', String(isSelected))
-      button.setAttribute('aria-label', modeButtonLabel)
-      button.title = modeButtonLabel
+    renderVoiceControlsView({
+      controlPanel,
+      modeButtons,
+      speakerButton,
+      speechToggleButton,
+      micButton,
+      drawerToggleButton,
+      meterElement,
+      modeDetailElement,
+      micState,
+      runtimeSupport,
+      isStartingRecording,
+      viewModel: {
+        ...viewModel,
+        modeDetail,
+        modeDetailTone:
+          micState.mode === MIC_MODES.AUTO && !autoModeSupported ? 'muted' : 'default',
+        isControlDrawerOpen,
+        isPreviewRequestPending
+      },
+      autoModeSupported,
+      hasAnalyser: Boolean(analyser),
+      isAutoReplySpeechEnabled
     })
-
-    speakerButton.disabled = isPreviewRequestPending
-    speakerButton.setAttribute(
-      'aria-label',
-      isPreviewRequestPending
-        ? 'Generating a test voice sample'
-        : 'Play a short test voice sample using the current reply voice'
-    )
-    speakerButton.title = isPreviewRequestPending
-      ? 'Generating a test voice sample'
-      : 'Play a short test voice sample using the current reply voice'
-    if (speechToggleButton) {
-      speechToggleButton.dataset.active = String(isAutoReplySpeechEnabled)
-      speechToggleButton.setAttribute('aria-pressed', String(isAutoReplySpeechEnabled))
-      speechToggleButton.setAttribute(
-        'aria-label',
-        isAutoReplySpeechEnabled
-          ? 'Turn off spoken assistant replies'
-          : 'Turn on spoken assistant replies'
-      )
-      speechToggleButton.title = isAutoReplySpeechEnabled
-        ? 'Turn off spoken assistant replies'
-        : 'Turn on spoken assistant replies'
-    }
-    micButton.disabled = micDisabled
-    micButton.dataset.state = viewModel.buttonVisualState
-    micButton.dataset.monitoring = String(Boolean(analyser && viewModel.shouldShowMeter))
-    micButton.setAttribute('aria-label', viewModel.buttonLabel)
-    micButton.title = viewModel.buttonLabel
-    micButton.setAttribute(
-      'aria-pressed',
-      String(
-        micState.phase === MIC_PHASES.RECORDING ||
-          (micState.mode === MIC_MODES.AUTO && micState.autoEnabled)
-      )
-    )
-    drawerToggleButton.textContent = `Voice: ${formatModeLabel(micState.mode)}`
-    drawerToggleButton.setAttribute(
-      'aria-label',
-      `${isControlDrawerOpen ? 'Hide' : 'Show'} voice controls. Current mode: ${formatModeLabel(micState.mode)}.`
-    )
-    drawerToggleButton.title = `${isControlDrawerOpen ? 'Hide' : 'Show'} voice controls`
-
-    if (meterElement) {
-      meterElement.dataset.active = String(Boolean(analyser && viewModel.shouldShowMeter))
-    }
-    modeDetailElement.textContent = modeDetail
-    modeDetailElement.dataset.tone =
-      micState.mode === MIC_MODES.AUTO && !supportsAutoMode() ? 'muted' : 'default'
 
     renderStatus()
     renderReplyHistory()
@@ -2141,34 +2100,6 @@
     return micState.mode === MIC_MODES.AUTO && micState.autoEnabled
   }
 
-  function formatModeLabel(mode) {
-    switch (mode) {
-      case MIC_MODES.HOLD:
-        return 'PTT'
-      case MIC_MODES.AUTO:
-        return 'Auto'
-      case MIC_MODES.TOGGLE:
-      default:
-        return 'Click'
-    }
-  }
-
-  function getModeButtonLabel(mode, autoModeSupported) {
-    switch (mode) {
-      case MIC_MODES.HOLD:
-        return 'PTT mode. Hold the mic button to talk, then release to inject the transcript.'
-
-      case MIC_MODES.AUTO:
-        return autoModeSupported
-          ? 'Auto mode. Leave listening on and text will inject after you speak and pause.'
-          : 'Auto mode is unavailable here because live microphone monitoring is not available.'
-
-      case MIC_MODES.TOGGLE:
-      default:
-        return 'Click mode. Click once to talk, then click again or press Enter to stop.'
-    }
-  }
-
   function isBusyMicPhase(phase) {
     return BUSY_PHASES.has(phase)
   }
@@ -2503,26 +2434,8 @@
   }
 
   function registerReplyMessage(payload) {
-    const text = String(payload?.text || '').trim()
-
-    if (!text) {
+    if (!upsertReplyMessage(replyMessages, payload)) {
       return
-    }
-
-    const id = String(payload?.id || `reply-${Date.now()}-${replyMessages.length}`)
-    const existing = replyMessages.find((message) => message.id === id)
-
-    if (existing) {
-      existing.text = text
-    } else {
-      replyMessages.unshift({
-        id,
-        text,
-        audioBase64: '',
-        mimeType: '',
-        provider: '',
-        isLoadingAudio: false
-      })
     }
 
     trimReplyHistory()
@@ -2531,84 +2444,23 @@
   }
 
   function registerReplyAudio(payload) {
-    const text = String(payload?.text || '').trim()
-
-    if (!text) {
+    if (!attachReplyAudio(replyMessages, payload)) {
       return
     }
 
-    const id = String(payload?.id || `reply-${Date.now()}-${replyMessages.length}`)
-    let message = replyMessages.find((entry) => entry.id === id)
-
-    if (!message) {
-      registerReplyMessage({ id, text })
-      message = replyMessages.find((entry) => entry.id === id)
-    }
-
-    if (!message) {
-      return
-    }
-
-    message.text = text
-    message.audioBase64 = payload.audioBase64 || message.audioBase64
-    message.mimeType = payload.mimeType || message.mimeType || 'audio/mpeg'
-    message.provider = payload.provider || message.provider
+    trimReplyHistory()
     revealReplyHistory()
     renderReplyHistory()
   }
 
-  function trimReplyHistory() {
-    if (replyMessages.length > REPLY_HISTORY_LIMIT) {
-      replyMessages.length = REPLY_HISTORY_LIMIT
-    }
-  }
-
   function renderReplyHistory() {
-    if (!replyHistoryElement || !replyHistoryToggleButton) {
-      return
-    }
-
-    const shouldShow = shouldShowReplyHistory()
-
-    replyHistoryElement.hidden = replyMessages.length === 0
-    replyHistoryElement.dataset.visible = String(shouldShow)
-    replyHistoryToggleButton.dataset.active = String(shouldShow)
-    replyHistoryToggleButton.setAttribute('aria-pressed', String(shouldShow))
-    replyHistoryToggleButton.setAttribute(
-      'aria-label',
-      shouldShow ? 'Hide recent reply playback controls' : 'Show recent reply playback controls'
-    )
-    replyHistoryToggleButton.title = shouldShow
-      ? 'Hide recent reply playback controls'
-      : 'Show recent reply playback controls'
-    replyHistoryElement.replaceChildren()
-
-    replyMessages.forEach((message) => {
-      const item = document.createElement('div')
-      item.className = 'replyItem'
-
-      const text = document.createElement('div')
-      text.className = 'replyText'
-      text.textContent = message.text
-
-      const button = document.createElement('button')
-      button.className = 'replySpeakButton'
-      button.type = 'button'
-      button.disabled = message.isLoadingAudio
-      button.dataset.active = String(activeReplyPlaybackId === message.id)
-      button.setAttribute(
-        'aria-label',
-        activeReplyPlaybackId === message.id
-          ? `Stop reply: ${message.text.slice(0, 80)}`
-          : `Play reply: ${message.text.slice(0, 80)}`
-      )
-      button.title =
-        activeReplyPlaybackId === message.id
-          ? 'Stop spoken reply playback'
-          : 'Play this reply again'
-      button.innerHTML =
-        '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 10.5V13.5H8.5L13 18V6L8.5 10.5H5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M16 9C17.333 10.167 18 11.5 18 13C18 14.5 17.333 15.833 16 17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>'
-      button.addEventListener('click', () => {
+    renderReplyHistoryView({
+      replyHistoryElement,
+      replyHistoryToggleButton,
+      replyMessages,
+      shouldShow: shouldShowReplyHistory(replyMessages, isReplyHistoryVisible, isReplyHistoryPinned),
+      activeReplyPlaybackId,
+      onReplyButtonClick: (message) => {
         if (activeReplyPlaybackId === message.id) {
           stopSpeechPlayback({
             clearQueue: true
@@ -2620,9 +2472,7 @@
         playReplyMessage(message.id).catch((error) => {
           setStatus(error.message, 'error')
         })
-      })
-      item.append(text, button)
-      replyHistoryElement.append(item)
+      }
     })
   }
 
@@ -2714,12 +2564,12 @@
     }
   }
 
-  function shouldShowReplyHistory() {
-    return Boolean(replyMessages.length && (isReplyHistoryVisible || isReplyHistoryPinned))
-  }
-
   function dismissReplyHistory() {
-    if (!replyHistoryElement || !replyMessages.length || !shouldShowReplyHistory()) {
+    if (
+      !replyHistoryElement ||
+      !replyMessages.length ||
+      !shouldShowReplyHistory(replyMessages, isReplyHistoryVisible, isReplyHistoryPinned)
+    ) {
       isReplyHistoryVisible = false
       renderReplyHistory()
       return
