@@ -85,9 +85,8 @@
   const LIVE_DICTATION_FALLBACK_MS = 650
   const LIVE_RESULT_GRACE_MS = 900
   const LIVE_STOP_WAIT_MS = 900
-  const REPLY_HISTORY_LIMIT = 6
-  const REPLY_HISTORY_AUTO_HIDE_MS = 15000
-  const REPLY_HISTORY_AFTER_PLAYBACK_HIDE_MS = 650
+  const REPLY_HISTORY_LIMIT = 3
+  const REPLY_HISTORY_AUTO_HIDE_MS = 7000
   const STATUS_NOTICE_MS = 5000
   const AUTO_REPLY_SPEECH_STORAGE_KEY = 'wsl-voice-terminal.auto-reply-speech-enabled'
   const BUSY_PHASES = new Set([
@@ -138,9 +137,8 @@
   const replyMessages = []
   let isPlayingAudio = false
   let isControlDrawerOpen = false
-  let isReplyHistoryPinned = false
   let isReplyHistoryVisible = false
-  let replyHistoryHideTimer = 0
+  const replyVisibilityTimers = new Map()
   let lastShortcutPasteAt = 0
   let isCloseVaporizeInProgress = false
   let updatePromptState = {
@@ -293,14 +291,10 @@
       return
     }
 
-    if (shouldShowReplyHistory()) {
-      isReplyHistoryPinned = false
+    if (getVisibleReplyMessages().length) {
       dismissReplyHistory()
-      clearReplyHistoryHideTimer()
     } else {
-      isReplyHistoryPinned = true
-      isReplyHistoryVisible = true
-      clearReplyHistoryHideTimer()
+      revealStoredReplyHistory()
     }
 
     renderReplyHistory()
@@ -771,18 +765,20 @@
         type: 'PLAYBACK_FINISHED'
       })
       logRuntime('speech.playback_queue_drained', {})
-      scheduleReplyHistoryHide({
-        delayMs: REPLY_HISTORY_AFTER_PLAYBACK_HIDE_MS
-      })
       return
     }
 
     const payload = playbackQueue.shift()
+    const replyMessage = payload.id ? findReplyMessage(payload.id) : null
 
     activeReplyPlaybackId = payload.id || ''
-    revealReplyHistory({
-      sticky: true
-    })
+    if (replyMessage) {
+      showReplyMessage(replyMessage.id, {
+        mode: replyMessage.visibilityMode || 'history'
+      })
+      replyMessage.pendingHideAfterPlayback = true
+      clearReplyVisibilityTimer(replyMessage.id)
+    }
     renderReplyHistory()
 
     const bytes = base64ToUint8Array(payload.audioBase64)
@@ -801,13 +797,17 @@
       if (currentPlaybackHandle?.audio === audio) {
         currentPlaybackHandle = null
       }
+      const playedReplyMessage = payload.id ? findReplyMessage(payload.id) : null
       activeReplyPlaybackId = ''
-      if (!isReplyHistoryPinned) {
-        scheduleReplyHistoryHide({
-          delayMs: REPLY_HISTORY_AFTER_PLAYBACK_HIDE_MS
+      if (playedReplyMessage?.pendingHideAfterPlayback) {
+        playedReplyMessage.pendingHideAfterPlayback = false
+        dismissReplyMessage(playedReplyMessage.id, {
+          reason: 'reply-playback-finished'
         })
+      } else {
+        syncReplyHistoryVisibility()
+        renderReplyHistory()
       }
-      renderReplyHistory()
       logRuntime('speech.playback_finished', {
         id: payload.id || '',
         errorMessage: errorMessage || ''
@@ -2544,13 +2544,184 @@
     return bytes
   }
 
+  function findReplyMessage(messageId) {
+    return replyMessages.find((entry) => entry.id === messageId) || null
+  }
+
+  function getVisibleReplyMessages() {
+    return replyMessages.filter((message) => message.isVisible)
+  }
+
+  function syncReplyHistoryVisibility() {
+    isReplyHistoryVisible = getVisibleReplyMessages().length > 0
+  }
+
+  function clearReplyVisibilityTimer(messageId) {
+    const timerId = replyVisibilityTimers.get(messageId)
+
+    if (!timerId) {
+      return
+    }
+
+    window.clearTimeout(timerId)
+    replyVisibilityTimers.delete(messageId)
+  }
+
+  function clearAllReplyVisibilityTimers() {
+    replyVisibilityTimers.forEach((timerId) => {
+      window.clearTimeout(timerId)
+    })
+    replyVisibilityTimers.clear()
+  }
+
+  function trimStoredReplyHistory() {
+    while (replyMessages.length > REPLY_HISTORY_LIMIT) {
+      const removedMessage = replyMessages.pop()
+
+      if (!removedMessage) {
+        continue
+      }
+
+      clearReplyVisibilityTimer(removedMessage.id)
+    }
+
+    syncReplyHistoryVisibility()
+  }
+
+  function getReplyHistoryItemElement(messageId) {
+    if (!replyHistoryElement) {
+      return null
+    }
+
+    return (
+      Array.from(replyHistoryElement.querySelectorAll('.replyItem')).find(
+        (item) => item.dataset.replyId === messageId
+      ) || null
+    )
+  }
+
+  function showReplyMessage(messageId, { mode = 'live' } = {}) {
+    const message = findReplyMessage(messageId)
+
+    if (!message) {
+      return null
+    }
+
+    message.isVisible = true
+    message.visibilityMode = mode
+    syncReplyHistoryVisibility()
+    return message
+  }
+
+  function dismissReplyMessage(messageId, { reason = 'reply-history-hide', delayMs = 0 } = {}) {
+    const message = findReplyMessage(messageId)
+
+    if (!message) {
+      return
+    }
+
+    clearReplyVisibilityTimer(messageId)
+
+    const dismiss = () => {
+      const item = getReplyHistoryItemElement(messageId)
+
+      if (item) {
+        vaporizeBubble(item, {
+          durationMs: 620,
+          particleSize: 2,
+          travel: 32,
+          reason
+        })
+      }
+
+      message.isVisible = false
+      message.pendingHideAfterPlayback = false
+      syncReplyHistoryVisibility()
+      renderReplyHistory()
+    }
+
+    if (delayMs > 0) {
+      window.setTimeout(dismiss, delayMs)
+      return
+    }
+
+    dismiss()
+  }
+
+  function scheduleReplyMessageHide(
+    messageId,
+    { delayMs = REPLY_HISTORY_AUTO_HIDE_MS, reason = 'reply-history-timeout' } = {}
+  ) {
+    const message = findReplyMessage(messageId)
+
+    if (!message) {
+      return
+    }
+
+    clearReplyVisibilityTimer(messageId)
+    replyVisibilityTimers.set(
+      messageId,
+      window.setTimeout(() => {
+        const currentMessage = findReplyMessage(messageId)
+
+        if (!currentMessage || !currentMessage.isVisible) {
+          clearReplyVisibilityTimer(messageId)
+          return
+        }
+
+        if (activeReplyPlaybackId === messageId || currentMessage.isLoadingAudio) {
+          currentMessage.pendingHideAfterPlayback = true
+          clearReplyVisibilityTimer(messageId)
+          return
+        }
+
+        dismissReplyMessage(messageId, { reason })
+      }, delayMs)
+    )
+  }
+
+  function revealStoredReplyHistory() {
+    if (!replyMessages.length) {
+      return
+    }
+
+    replyMessages.forEach((message) => {
+      showReplyMessage(message.id, {
+        mode: 'history'
+      })
+
+      if (activeReplyPlaybackId === message.id) {
+        message.pendingHideAfterPlayback = true
+        clearReplyVisibilityTimer(message.id)
+        return
+      }
+
+      scheduleReplyMessageHide(message.id)
+    })
+
+    renderReplyHistory()
+  }
+
   function registerReplyMessage(payload) {
     if (!upsertReplyMessage(replyMessages, payload)) {
       return
     }
 
-    trimReplyHistory(replyMessages, REPLY_HISTORY_LIMIT)
-    revealReplyHistory()
+    const replyMessage = findReplyMessage(String(payload?.id || '')) || replyMessages[0] || null
+
+    replyMessages.forEach((message) => {
+      if (!replyMessage || message.id !== replyMessage.id) {
+        message.isVisible = false
+        message.pendingHideAfterPlayback = false
+      }
+    })
+    clearAllReplyVisibilityTimers()
+    if (replyMessage) {
+      showReplyMessage(replyMessage.id, {
+        mode: 'live'
+      })
+    }
+    trimStoredReplyHistory()
     renderReplyHistory()
   }
 
@@ -2559,17 +2730,25 @@
       return
     }
 
-    trimReplyHistory(replyMessages, REPLY_HISTORY_LIMIT)
-    revealReplyHistory()
+    const replyMessage = findReplyMessage(String(payload?.id || '')) || replyMessages[0] || null
+
+    if (replyMessage) {
+      showReplyMessage(replyMessage.id, {
+        mode: 'live'
+      })
+    }
+    trimStoredReplyHistory()
     renderReplyHistory()
   }
 
   function renderReplyHistory() {
+    const visibleReplyMessages = getVisibleReplyMessages()
+
     renderReplyHistoryView({
       replyHistoryElement,
       replyHistoryToggleButton,
-      replyMessages,
-      shouldShow: shouldShowReplyHistory(replyMessages, isReplyHistoryVisible, isReplyHistoryPinned),
+      replyMessages: visibleReplyMessages,
+      shouldShow: shouldShowReplyHistory(visibleReplyMessages, isReplyHistoryVisible, false),
       activeReplyPlaybackId,
       onReplyButtonClick: (message) => {
         if (activeReplyPlaybackId === message.id) {
@@ -2595,9 +2774,11 @@
     }
 
     try {
-      revealReplyHistory({
-        sticky: true
+      showReplyMessage(message.id, {
+        mode: 'history'
       })
+      message.pendingHideAfterPlayback = true
+      clearReplyVisibilityTimer(message.id)
       message.isLoadingAudio = !message.audioBase64
       renderReplyHistory()
 
@@ -2639,65 +2820,21 @@
     }
   }
 
-  function revealReplyHistory({ sticky = false } = {}) {
-    if (!replyMessages.length) {
-      isReplyHistoryVisible = false
-      clearReplyHistoryHideTimer()
-      return
-    }
-
-    isReplyHistoryVisible = true
-
-    if (sticky || isReplyHistoryPinned) {
-      clearReplyHistoryHideTimer()
-      return
-    }
-
-    scheduleReplyHistoryHide()
-  }
-
-  function scheduleReplyHistoryHide({ delayMs = REPLY_HISTORY_AUTO_HIDE_MS } = {}) {
-    clearReplyHistoryHideTimer()
-
-    if (isReplyHistoryPinned || !replyMessages.length) {
-      return
-    }
-
-    replyHistoryHideTimer = window.setTimeout(() => {
-      dismissReplyHistory()
-    }, delayMs)
-  }
-
-  function clearReplyHistoryHideTimer() {
-    if (replyHistoryHideTimer) {
-      window.clearTimeout(replyHistoryHideTimer)
-      replyHistoryHideTimer = 0
-    }
-  }
-
   function dismissReplyHistory() {
-    if (
-      !replyHistoryElement ||
-      !replyMessages.length ||
-      !shouldShowReplyHistory(replyMessages, isReplyHistoryVisible, isReplyHistoryPinned)
-    ) {
-      isReplyHistoryVisible = false
+    const visibleReplyMessages = getVisibleReplyMessages()
+
+    if (!visibleReplyMessages.length) {
+      syncReplyHistoryVisibility()
       renderReplyHistory()
       return
     }
 
-    const items = Array.from(replyHistoryElement.querySelectorAll('.replyItem'))
-    items.forEach((item, index) => {
-      vaporizeBubble(item, {
-        durationMs: 620,
-        particleSize: 2,
-        travel: 32,
+    visibleReplyMessages.forEach((message, index) => {
+      dismissReplyMessage(message.id, {
         reason: 'reply-history-hide',
         delayMs: index * 34
       })
     })
-    isReplyHistoryVisible = false
-    renderReplyHistory()
   }
 
   function vaporizeBubble(element, options = {}) {
