@@ -42,6 +42,21 @@ test('does not finalize a long partial reply until a prompt boundary returns', (
   ])
 })
 
+test('finalizes stable repeated speech when boundary is missing', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n')
+  interceptor.observeInput('Explain it\r')
+  interceptor.observeOutput('This response lacks a visible prompt boundary.')
+
+  assert.equal(interceptor.flush(), null)
+  assert.equal(
+    interceptor.flush(),
+    'This response lacks a visible prompt boundary.'
+  )
+  assert.deepEqual(emitted, ['This response lacks a visible prompt boundary.'])
+})
+
 test('finalizes when a shell prompt returns after a one-shot codex command', () => {
   const { interceptor, emitted } = createInterceptor()
 
