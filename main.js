@@ -44,6 +44,10 @@ let terminalSession = null
 let hasCheckedForAppUpdate = false
 let activeUpdateInfo = null
 let isApplyingAppUpdate = false
+let isAppQuitting = false
+let closeVaporizeTimeoutId = null
+let isCloseVaporizePending = false
+let isCloseVaporizeForced = false
 const statusNoticeKeys = new Set()
 const runtimeLogger = new RuntimeLogger({
   baseDir: __dirname
@@ -112,6 +116,10 @@ function configureWindowsStoragePaths() {
 }
 
 function createWindow() {
+  isCloseVaporizePending = false
+  isCloseVaporizeForced = false
+  clearCloseVaporizeTimeout()
+
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -149,9 +157,53 @@ function createWindow() {
   })
 
   mainWindow.on('closed', () => {
+    clearCloseVaporizeTimeout()
+    isCloseVaporizePending = false
+    isCloseVaporizeForced = false
     terminalSession?.dispose()
     terminalSession = null
     mainWindow = null
+  })
+
+  mainWindow.on('close', (event) => {
+    if (
+      isAppQuitting ||
+      isApplyingAppUpdate ||
+      isCloseVaporizeForced ||
+      !mainWindow ||
+      mainWindow.webContents.isDestroyed() ||
+      mainWindow.webContents.isLoadingMainFrame()
+    ) {
+      return
+    }
+
+    event.preventDefault()
+
+    if (isCloseVaporizePending) {
+      return
+    }
+
+    isCloseVaporizePending = true
+    runtimeLogger.log('window.close_vaporize_requested', {
+      windowId: mainWindow.id
+    }, {
+      component: 'window',
+      processType: 'main',
+      windowId: mainWindow.id
+    })
+    closeVaporizeTimeoutId = setTimeout(() => {
+      finalizeWindowClose('timeout')
+    }, 1000)
+    beginWindowCloseVaporize(mainWindow).catch((error) => {
+      runtimeLogger.log('window.close_vaporize_failed', {
+        message: error instanceof Error ? error.message : String(error)
+      }, {
+        component: 'window',
+        processType: 'main',
+        windowId: mainWindow?.id || null
+      })
+      finalizeWindowClose('capture-error')
+    })
   })
 }
 
@@ -268,6 +320,21 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.handle('app:close-vaporize-complete', async (_event) => {
+    const window = BrowserWindow.fromWebContents(_event.sender)
+
+    if (!window || window !== mainWindow || !isCloseVaporizePending) {
+      return {
+        ok: false
+      }
+    }
+
+    finalizeWindowClose('renderer')
+    return {
+      ok: true
+    }
+  })
+
   ipcMain.handle('stt:transcribe', async (_event, payload) => {
     const normalizedPayload = normalizeTranscribePayload(payload)
     const requestedProvider = openAIClient.hasApiKey() ? 'openai' : 'local-whisper'
@@ -359,6 +426,7 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', async () => {
+  isAppQuitting = true
   await appLogger.log('app.before_quit', {})
   await runtimeLogger.flush()
 })
@@ -418,6 +486,57 @@ function configureMediaPermissions(electronSession) {
       callback(allowed)
     }
   )
+}
+
+async function beginWindowCloseVaporize(window) {
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) {
+    finalizeWindowClose('window-missing')
+    return
+  }
+
+  const snapshot = await window.webContents.capturePage()
+
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed() || !isCloseVaporizePending) {
+    finalizeWindowClose('window-missing')
+    return
+  }
+
+  const bounds = window.getContentBounds()
+
+  window.webContents.send('app:begin-close-vaporize', {
+    imageDataUrl: snapshot.toDataURL(),
+    durationMs: 760,
+    width: bounds.width,
+    height: bounds.height
+  })
+}
+
+function finalizeWindowClose(reason) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    clearCloseVaporizeTimeout()
+    isCloseVaporizePending = false
+    isCloseVaporizeForced = false
+    return
+  }
+
+  runtimeLogger.log('window.close_vaporize_completed', {
+    reason
+  }, {
+    component: 'window',
+    processType: 'main',
+    windowId: mainWindow.id
+  })
+  clearCloseVaporizeTimeout()
+  isCloseVaporizePending = false
+  isCloseVaporizeForced = true
+  mainWindow.close()
+}
+
+function clearCloseVaporizeTimeout() {
+  if (closeVaporizeTimeoutId) {
+    clearTimeout(closeVaporizeTimeoutId)
+    closeVaporizeTimeoutId = null
+  }
 }
 
 function announceInitialSpeechMode() {

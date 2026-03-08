@@ -24,11 +24,13 @@ contextBridge.exposeInMainWorld('terminalAPI', {
   logRuntimeEvent: (payload) => ipcRenderer.send('runtime:log', payload),
   getRuntimeInfo: () => ipcRenderer.invoke('runtime:info'),
   respondToAppUpdate: (action) => ipcRenderer.invoke('app:update-response', action),
+  completeCloseVaporize: () => ipcRenderer.invoke('app:close-vaporize-complete'),
   onPtyData: (handler) => subscribe('pty:data', handler),
   onPtyExit: (handler) => subscribe('pty:exit', handler),
   onSpeechFinalized: (handler) => subscribe('speech:finalized', handler),
   onSpeechAudio: (handler) => subscribe('speech:audio', handler),
   onAppUpdateAvailable: (handler) => subscribe('app:update-available', handler),
+  onBeginCloseVaporize: (handler) => subscribe('app:begin-close-vaporize', handler),
   onStatus: (handler) => subscribe('app:status', handler),
   onError: (handler) => subscribe('app:error', handler)
 })

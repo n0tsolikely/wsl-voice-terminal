@@ -6,6 +6,8 @@
   const replyHistoryUiApi = window.WslVoiceTerminalReplyHistoryUi
   const vaporizeApi = window.WslVoiceTerminalVaporize || null
   const voiceControlsUiApi = window.WslVoiceTerminalVoiceControlsUi
+  const terminalShellElement = document.getElementById('terminalShell')
+  const overlayElement = document.getElementById('overlay')
   const terminalElement = document.getElementById('terminal')
   const replyHistoryElement = document.getElementById('replyHistory')
   const controlPanel = document.getElementById('controlPanel')
@@ -140,6 +142,7 @@
   let isReplyHistoryVisible = false
   let replyHistoryHideTimer = 0
   let lastShortcutPasteAt = 0
+  let isCloseVaporizeInProgress = false
   let updatePromptState = {
     visible: false,
     busy: false,
@@ -248,6 +251,18 @@
     logRuntime('app.update_prompt_shown', {
       currentLabel: payload?.currentLabel || '',
       latestLabel: payload?.latestLabel || ''
+    })
+  })
+
+  api.onBeginCloseVaporize?.((payload) => {
+    beginCloseVaporize(payload).catch((error) => {
+      logRuntime('app.close_vaporize_result', {
+        ok: false,
+        method: 'renderer-error',
+        particleCount: 0,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      })
+      api.completeCloseVaporize?.().catch(() => {})
     })
   })
 
@@ -1001,6 +1016,102 @@
     renderUi()
     renderMeterIdle()
     renderUpdatePrompt()
+  }
+
+  async function beginCloseVaporize(payload = {}) {
+    if (isCloseVaporizeInProgress) {
+      return
+    }
+
+    isCloseVaporizeInProgress = true
+    const imageDataUrl = String(payload?.imageDataUrl || '')
+    const width = Math.max(1, Number(payload?.width || window.innerWidth || 0))
+    const height = Math.max(1, Number(payload?.height || window.innerHeight || 0))
+    const durationMs = Math.min(900, Math.max(500, Number(payload?.durationMs || 760)))
+    let backdrop = null
+
+    logRuntime('app.close_vaporize', {
+      action: 'start',
+      hasImage: Boolean(imageDataUrl),
+      width,
+      height,
+      durationMs
+    })
+
+    try {
+      if (imageDataUrl && vaporizeApi?.vaporizeImageDataUrl) {
+        backdrop = createCloseVaporizeBackdrop(imageDataUrl, width, height)
+        hideLiveUiForCloseVaporize()
+        await nextFrame()
+        backdrop.style.opacity = '0'
+
+        const result = await vaporizeApi.vaporizeImageDataUrl(
+          imageDataUrl,
+          {
+            left: 0,
+            top: 0,
+            width,
+            height
+          },
+          {
+            durationMs,
+            particleSize: 3,
+            travel: 42,
+            gravity: 16
+          }
+        )
+
+        logRuntime('app.close_vaporize_result', {
+          ok: Boolean(result?.ok),
+          method: result?.method || '',
+          particleCount: Number(result?.particleCount || 0),
+          errorMessage: result?.errorMessage || ''
+        })
+      } else {
+        logRuntime('app.close_vaporize_result', {
+          ok: false,
+          method: 'missing-snapshot',
+          particleCount: 0,
+          errorMessage: imageDataUrl ? 'Window vaporize helper is unavailable.' : 'Window snapshot was missing.'
+        })
+      }
+    } finally {
+      backdrop?.remove()
+      await api.completeCloseVaporize?.()
+    }
+  }
+
+  function createCloseVaporizeBackdrop(imageDataUrl, width, height) {
+    const backdrop = document.createElement('img')
+    backdrop.src = imageDataUrl
+    backdrop.alt = ''
+    backdrop.setAttribute('aria-hidden', 'true')
+    backdrop.style.position = 'fixed'
+    backdrop.style.left = '0'
+    backdrop.style.top = '0'
+    backdrop.style.width = `${width}px`
+    backdrop.style.height = `${height}px`
+    backdrop.style.objectFit = 'cover'
+    backdrop.style.pointerEvents = 'none'
+    backdrop.style.zIndex = '9998'
+    backdrop.style.opacity = '1'
+    backdrop.style.transition = 'opacity 140ms linear'
+    document.body.appendChild(backdrop)
+    return backdrop
+  }
+
+  function hideLiveUiForCloseVaporize() {
+    ;[terminalShellElement, overlayElement, statusDockElement, micButton].forEach((element) => {
+      if (element instanceof Element) {
+        element.style.visibility = 'hidden'
+      }
+    })
+  }
+
+  function nextFrame() {
+    return new Promise((resolve) => {
+      window.requestAnimationFrame(() => resolve())
+    })
   }
 
   function renderUi() {
