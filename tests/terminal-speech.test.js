@@ -80,6 +80,28 @@ test('extractSpeechText keeps lead-in prose around unfenced CLI code output', ()
   )
 })
 
+test('extractSpeechText keeps prose before and after inline code-like lines in one reply', () => {
+  const input = [
+    'Sure. Here is a quick demo.',
+    '',
+    'Before code: this is a tiny Python snippet that logs a start message, does a simple calculation, and prints the result.',
+    'def run_demo():',
+    'print("Starting demo...")',
+    'total = sum(i * i for i in range(1, 6))',
+    'print(f"Result: {total}")',
+    'if __name__ == "__main__":',
+    'run_demo()',
+    'After code: if you run it, it prints a start line and then Result: 55.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Sure. Here is a quick demo. Before code: this is a tiny Python snippet that logs a start message, does a simple calculation, and prints the result. After code: if you run it, it prints a start line and then Result: 55.'
+  )
+})
+
 test('extractSpeechText drops unfenced shell script lines while keeping prose around them', () => {
   const input = [
     'Second pass: this line should be spoken before the script.',
@@ -371,5 +393,36 @@ test('extractSpeechText keeps the lead-in before a bullet list like the runtime 
   assert.equal(
     output,
     "I’m checking the current workspace state so I can answer concretely instead of guessing. First step is to verify where we are and whether this is a repo with extra contract files. Right now, not much. We’re sitting in /mnt/c/Users/peter, which looks like your Windows home directory, not an active repo root. AGENTS.md files exist in subfolders like /mnt/c/Users/peter/Desktop/AGENTS.md, but not as the contract for the current home-directory worktree I did not find the Synapse pair EXECUTOR.md plus governance/SYNAPSE_STATE.yaml in the current worktree, so Synapse is not engaged here So the concrete answer is: no repo-specific workflow is active yet, and I haven’t made any changes."
+  )
+})
+
+test('extractSpeechText keeps conversational prose around runtime-style prompt redraw noise and code', () => {
+  const input = [
+    '• Sure. Here’s a quick demo.',
+    '',
+    '› Run /review on my current changes',
+    '',
+    'gpt-5.3-codex medium · 100% left · /mnt/c/Users/peter',
+    '',
+    'Before code: this is a tiny Python snippet that logs a start message, does a simple calculation, and prints the result.',
+    'def run_demo():',
+    'print("Starting demo...")',
+    'total = sum(i * i for i in range(1, 6))',
+    'print(f"Result: {total}")',
+    'if __name__ == "__main__":',
+    'run_demo()',
+    '',
+    'After code: if you run it, it prints a start line and then Result: 55.',
+    '',
+    '› Run /review on my current changes',
+    '',
+    'gpt-5.3-codex medium · 100% left · /mnt/c/Users/peter'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(
+    output,
+    'Sure. Here’s a quick demo. Before code: this is a tiny Python snippet that logs a start message, does a simple calculation, and prints the result. After code: if you run it, it prints a start line and then Result: 55.'
   )
 })
