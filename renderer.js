@@ -88,6 +88,7 @@
   const REPLY_HISTORY_LIMIT = 3
   const REPLY_HISTORY_AUTO_HIDE_MS = 7000
   const STATUS_NOTICE_MS = 5000
+  const TRANSCRIPTION_WATCHDOG_MS = 20000
   const AUTO_REPLY_SPEECH_STORAGE_KEY = 'wsl-voice-terminal.auto-reply-speech-enabled'
   const BUSY_PHASES = new Set([
     MIC_PHASES.RECORDING,
@@ -139,6 +140,7 @@
   let isControlDrawerOpen = false
   let isReplyHistoryVisible = false
   const replyVisibilityTimers = new Map()
+  let transcriptionWatchdogTimer = 0
   let lastShortcutPasteAt = 0
   let isCloseVaporizeInProgress = false
   let updatePromptState = {
@@ -223,7 +225,9 @@
     registerReplyAudio(payload)
 
     if (isAutoReplySpeechEnabled) {
-      enqueueSpeech(payload)
+      enqueueSpeech(payload, {
+        autoRead: true
+      })
     }
   })
 
@@ -310,7 +314,7 @@
     })
       .then(() => {
         setStatus(
-          nextEnabled ? 'Assistant reply readback is on.' : 'Assistant reply readback is off.',
+          nextEnabled ? 'Automatic reply readback is on.' : 'Automatic reply readback is off.',
           'default',
           {
             durationMs: 2200,
@@ -370,7 +374,9 @@
       }
 
       clearStatus({ preserveErrors: false })
-      enqueueSpeech(payload)
+      enqueueSpeech(payload, {
+        force: true
+      })
     } catch (error) {
       setStatus(error.message, 'error')
     } finally {
@@ -741,20 +747,45 @@
     api.resizePty({ cols: terminal.cols, rows: terminal.rows })
   }
 
-  function enqueueSpeech(payload) {
+  function shouldDeferAutoReplyPlayback() {
+    return (
+      isStartingRecording ||
+      BUSY_PHASES.has(micState.phase) ||
+      activePointerId !== null
+    )
+  }
+
+  function maybeStartSpeechPlayback({ force = false } = {}) {
+    if (isPlayingAudio || !playbackQueue.length) {
+      return
+    }
+
+    const nextPayload = playbackQueue[0]
+
+    if (!force && nextPayload?.autoRead && shouldDeferAutoReplyPlayback()) {
+      return
+    }
+
+    isPlayingAudio = true
+    transitionMic({
+      type: 'PLAYBACK_STARTED'
+    })
+    playNextSpeech()
+  }
+
+  function enqueueSpeech(payload, options = {}) {
     if (!payload?.audioBase64) {
       return
     }
 
-    playbackQueue.push(payload)
+    playbackQueue.push({
+      ...payload,
+      autoRead: Boolean(options.autoRead)
+    })
 
-    if (!isPlayingAudio) {
-      isPlayingAudio = true
-      transitionMic({
-        type: 'PLAYBACK_STARTED'
-      })
-      playNextSpeech()
-    }
+    maybeStartSpeechPlayback({
+      force: Boolean(options.force)
+    })
   }
 
   async function playNextSpeech() {
@@ -858,6 +889,9 @@
       if (!playbackQueue.length) {
         isPlayingAudio = false
       }
+      activeReplyPlaybackId = ''
+      syncReplyHistoryVisibility()
+      renderReplyHistory()
       return
     }
 
@@ -2119,7 +2153,43 @@
 
   function transitionMic(event) {
     micState = transitionMicState(micState, event)
+    syncTranscriptionWatchdog()
     renderUi()
+    maybeStartSpeechPlayback()
+  }
+
+  function clearTranscriptionWatchdog() {
+    if (!transcriptionWatchdogTimer) {
+      return
+    }
+
+    clearTimeout(transcriptionWatchdogTimer)
+    transcriptionWatchdogTimer = 0
+  }
+
+  function syncTranscriptionWatchdog() {
+    clearTranscriptionWatchdog()
+
+    if (micState.phase !== MIC_PHASES.TRANSCRIBING) {
+      return
+    }
+
+    transcriptionWatchdogTimer = window.setTimeout(() => {
+      transcriptionWatchdogTimer = 0
+
+      if (micState.phase !== MIC_PHASES.TRANSCRIBING) {
+        return
+      }
+
+      logRuntime('mic.transcribing_watchdog', {
+        action: 'reset'
+      })
+      transitionMic({
+        type: 'RESET_TO_REST'
+      })
+      setStatus('Transcription took too long. Resetting the mic state.', 'error')
+      focusTerminal()
+    }, TRANSCRIPTION_WATCHDOG_MS)
   }
 
   function releaseMicPointerCapture(pointerId = activePointerId) {
@@ -2812,6 +2882,8 @@
         audioBase64: message.audioBase64,
         mimeType: message.mimeType || 'audio/mpeg',
         provider: message.provider || ''
+      }, {
+        force: true
       })
     } finally {
       message.isLoadingAudio = false

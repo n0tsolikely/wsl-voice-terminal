@@ -324,6 +324,34 @@ test('does not duplicate a spoken segment when the same tool boundary redraw rep
   assert.deepEqual(emitted, ['I confirmed the workspace and I’m creating a temp file now.'])
 })
 
+test('marks tool-boundary narration as a continuing response and final reply as terminal', () => {
+  const emitted = []
+  const interceptor = new CodexSpeechInterceptor(
+    (text, meta) => {
+      emitted.push({ text, meta })
+    },
+    {
+      schedule: () => 1,
+      clearScheduled: () => {},
+      idleMs: 1
+    }
+  )
+
+  interceptor.observeOutput('OpenAI Codex\n› Implement {feature}\n')
+  interceptor.observeInput('run it\r')
+  interceptor.observeOutput('I confirmed the workspace and I’m creating a temp file now.\n')
+  interceptor.observeOutput('• Ran pwd && ls -1\n')
+  interceptor.observeOutput('Here is the final assistant answer.\n› Implement {feature}\n')
+
+  assert.equal(interceptor.flush(), 'Here is the final assistant answer.')
+  assert.equal(emitted.length, 2)
+  assert.equal(emitted[0].text, 'I confirmed the workspace and I’m creating a temp file now.')
+  assert.equal(emitted[0].meta.continueResponse, true)
+  assert.equal(emitted[0].meta.forcedBoundary, 'tool')
+  assert.equal(emitted[1].text, 'Here is the final assistant answer.')
+  assert.equal(emitted[1].meta.continueResponse, false)
+})
+
 test('does not speak echoed user input when Codex redraws it before the reply', () => {
   const { interceptor, emitted } = createInterceptor()
 
