@@ -130,7 +130,7 @@ test('still emits finalized text but skips TTS audio when auto reply speech is d
   assert.equal(sent[0].payload.text, 'This is the final answer.')
 })
 
-test('collapses tool-handoff narration into one final spoken reply', async () => {
+test('speaks only the final assistant segment when tool-handoff narration occurs earlier', async () => {
   const sent = []
   const relay = new SpeechRelay({
     ttsService: {
@@ -167,8 +167,54 @@ test('collapses tool-handoff narration into one final spoken reply', async () =>
   assert.equal(sent[0].channel, 'speech:finalized')
   assert.equal(
     sent[0].payload.text,
-    'I confirmed the workspace and I’m creating a temp file now, then I’ll patch it and show a real unified diff. File is created. I’m editing it now with a few real code changes, then I’ll print the diff. Diff is ready and shown. Now I’m doing the cleanup phase: deleting the temp files I made and verifying they’re gone. Here is the final answer after the tool finished.'
+    'Here is the final answer after the tool finished.'
   )
+  assert.equal(sent[1].channel, 'speech:audio')
+  assert.equal(sent[1].payload.id, sent[0].payload.id)
+  assert.equal(
+    Buffer.from(sent[1].payload.audioBase64, 'base64').toString('utf8'),
+    sent[0].payload.text
+  )
+})
+
+test('flush fallback finalizes the latest pending segment when continueResponse never flips false', async () => {
+  const sent = []
+  let onFinalizedText = () => {}
+  const relay = new SpeechRelay({
+    ttsService: {
+      synthesizeSpeech: async (text) => ({
+        audioBuffer: Buffer.from(text),
+        mimeType: 'audio/mpeg',
+        provider: 'fake'
+      })
+    },
+    send: (channel, payload) => {
+      sent.push({ channel, payload })
+    },
+    createInterceptor: (handler) => {
+      onFinalizedText = handler
+      return {
+        observeInput: () => {},
+        observeOutput: () => {},
+        flush: () => {},
+        dispose: () => {}
+      }
+    }
+  })
+
+  onFinalizedText('Mid-run narration that should not be spoken.', {
+    continueResponse: true
+  })
+  onFinalizedText('Latest segment should be spoken by fallback flush.', {
+    continueResponse: true
+  })
+
+  await relay.flush()
+  relay.dispose()
+
+  assert.equal(sent.length, 2)
+  assert.equal(sent[0].channel, 'speech:finalized')
+  assert.equal(sent[0].payload.text, 'Latest segment should be spoken by fallback flush.')
   assert.equal(sent[1].channel, 'speech:audio')
   assert.equal(sent[1].payload.id, sent[0].payload.id)
   assert.equal(
