@@ -195,6 +195,22 @@ test('extractSpeechText ignores bare filenames and long ls permission lines', ()
   )
 })
 
+test('extractSpeechText ignores file-by-file tool progress chatter and keeps the human update', () => {
+  const input = [
+    '● Searching renderer.js for auto mic behavior',
+    '● Reading lib/codex-speech-interceptor.js',
+    '● Opening tests/terminal-speech.test.js',
+    '',
+    'I’m checking the runtime behavior now and I’ll keep the updates high level.',
+    '',
+    '› Review the runtime'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I’m checking the runtime behavior now and I’ll keep the updates high level.')
+})
+
 test('extractSpeechText ignores claude cursor-redraw context and token lines', () => {
   const input = [
     'Current dir: /mnt/c/Users/peter',

@@ -240,6 +240,31 @@ test('flushes conversational prose when a tool run starts', () => {
   ])
 })
 
+test('treats search and read tool chatter as tool boundaries instead of spoken reply text', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Review the runtime\n')
+  interceptor.observeInput('check the speech path\r')
+  interceptor.observeOutput('I’m checking the runtime now and keeping the progress updates high level.\n')
+  interceptor.observeOutput('● Searching renderer.js for status handling\n')
+  interceptor.observeOutput('● Reading lib/terminal-speech.js\n')
+
+  assert.deepEqual(emitted, [
+    'I’m checking the runtime now and keeping the progress updates high level.'
+  ])
+
+  interceptor.observeOutput('I found the fix. The runtime should stop reading tool chatter now.\n› Review the runtime\n')
+
+  assert.equal(
+    interceptor.flush(),
+    'I found the fix. The runtime should stop reading tool chatter now.'
+  )
+  assert.deepEqual(emitted, [
+    'I’m checking the runtime now and keeping the progress updates high level.',
+    'I found the fix. The runtime should stop reading tool chatter now.'
+  ])
+})
+
 test('flushes conversational prose when approval UI starts', () => {
   const { interceptor, emitted } = createInterceptor()
 
