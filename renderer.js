@@ -1280,7 +1280,9 @@
     clearStatus({ preserveErrors: false })
     await ensureMicrophoneReady()
     resetAutoTracking()
-    const strategy = hasLiveDictationSupport() ? AUTO_STRATEGIES.LIVE : AUTO_STRATEGIES.CAPTURE
+    // Keep auto mode on the metered capture path. Chromium live dictation is too eager to
+    // hallucinate polite filler when the room is quiet, which pollutes the prompt.
+    const strategy = AUTO_STRATEGIES.CAPTURE
     transitionMic({
       type: 'AUTO_ARM'
     })
@@ -1291,17 +1293,6 @@
     logRuntime('mic.auto_enabled', {
       strategy
     })
-
-    if (strategy !== AUTO_STRATEGIES.LIVE) {
-      return
-    }
-
-    try {
-      await startLiveDictation({ source: MIC_MODES.AUTO })
-    } catch (_error) {
-      disableLiveDictationForSession('start-failed')
-      switchAutoModeToCapture('Live dictation is unavailable here. Using auto capture fallback.')
-    }
   }
 
   function disableAutoListening() {

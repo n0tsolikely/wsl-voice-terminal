@@ -5,8 +5,10 @@ const { evaluateAutoTranscript, isLikelyNoiseHallucination } = require('../lib/a
 
 test('recognizes common silence hallucination phrases', () => {
   assert.equal(isLikelyNoiseHallucination('thank you'), true)
+  assert.equal(isLikelyNoiseHallucination('thank you very much'), true)
   assert.equal(isLikelyNoiseHallucination('thanks for watching'), true)
   assert.equal(isLikelyNoiseHallucination('bye'), true)
+  assert.equal(isLikelyNoiseHallucination('bye-bye!'), true)
   assert.equal(isLikelyNoiseHallucination('actual useful sentence'), false)
 })
 
@@ -38,4 +40,14 @@ test('accepts short real auto transcripts when there is clear voice activity', (
 
   assert.equal(verdict.accepted, true)
   assert.equal(verdict.normalizedText, 'thank you')
+})
+
+test('rejects longer filler closings when there is almost no voice activity', () => {
+  const verdict = evaluateAutoTranscript('thank you very much for watching', {
+    voiceMs: 65,
+    peakLevel: 0.01
+  })
+
+  assert.equal(verdict.accepted, false)
+  assert.equal(verdict.reason, 'likely-hallucination')
 })
