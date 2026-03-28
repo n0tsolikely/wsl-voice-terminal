@@ -20,6 +20,23 @@ function createInterceptor(options = {}) {
   return { interceptor, emitted }
 }
 
+function createMetaInterceptor(options = {}) {
+  const emitted = []
+  const interceptor = new CodexSpeechInterceptor(
+    (text, meta) => {
+      emitted.push({ text, meta })
+    },
+    {
+      schedule: () => 1,
+      clearScheduled: () => {},
+      idleMs: 1,
+      ...options
+    }
+  )
+
+  return { interceptor, emitted }
+}
+
 test('does not finalize a long partial reply until a prompt boundary returns', () => {
   const { interceptor, emitted } = createInterceptor()
 
@@ -97,6 +114,19 @@ test('finalizes when Codex returns to a prompt with no space and a footer line',
   interceptor.observeInput('Explain it\r')
   interceptor.observeOutput(
     'Here is the final answer.\n›Write tests for @filename\n  gpt-5.4 xhigh · 93% left · /mnt/c/Users/peter\n'
+  )
+
+  assert.equal(interceptor.flush(), 'Here is the final answer.')
+  assert.deepEqual(emitted, ['Here is the final answer.'])
+})
+
+test('finalizes when Codex returns to a prompt with a pathless usage meter line', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n›Write tests for @filename\nGPT 5.3 Codex Spark 68% left\n')
+  interceptor.observeInput('Explain it\r')
+  interceptor.observeOutput(
+    'Here is the final answer.\n›Write tests for @filename\nGPT 5.3 Codex Spark 68% left\n'
   )
 
   assert.equal(interceptor.flush(), 'Here is the final answer.')
@@ -265,8 +295,8 @@ test('treats search and read tool chatter as tool boundaries instead of spoken r
   ])
 })
 
-test('flushes conversational prose when approval UI starts', () => {
-  const { interceptor, emitted } = createInterceptor()
+test('flushes conversational prose and speaks one approval summary when approval UI starts', () => {
+  const { interceptor, emitted } = createMetaInterceptor()
 
   interceptor.observeOutput('OpenAI Codex\n› Implement {feature}\n')
   interceptor.observeInput('clean it up\r')
@@ -274,12 +304,31 @@ test('flushes conversational prose when approval UI starts', () => {
     'Diff is ready and shown. Now I’m doing the cleanup phase: deleting the temp files I made and verifying they’re gone.\n'
   )
   interceptor.observeOutput(
-    'Would you like to run the following command?\n$ rm -f /tmp/demo.py\nPress enter to confirm or esc to cancel\n'
+    [
+      'Would you like to run the following command?',
+      '$ rm -f /tmp/demo.py',
+      '1. Yes, proceed',
+      "2. Yes, and don't ask again for this exact command",
+      '3. No, and tell Codex what to do differently',
+      'Press enter to confirm or esc to cancel'
+    ].join('\n')
   )
 
-  assert.deepEqual(emitted, [
+  assert.equal(emitted.length, 2)
+  assert.equal(
+    emitted[0].text,
     'Diff is ready and shown. Now I’m doing the cleanup phase: deleting the temp files I made and verifying they’re gone.'
-  ])
+  )
+  assert.equal(emitted[0].meta.kind, 'checkpoint')
+  assert.equal(emitted[0].meta.continueResponse, true)
+  assert.equal(emitted[0].meta.forcedBoundary, 'approval')
+  assert.equal(
+    emitted[1].text,
+    "Approval needed. Codex wants to run command: rm -f /tmp/demo.py. Effect: This will delete files or directories. Options: 1, yes proceed. 2, yes and don't ask again for this command. 3, no, and tell Codex what to do differently. Press Enter to confirm or Escape to cancel."
+  )
+  assert.equal(emitted[1].meta.kind, 'approval')
+  assert.equal(emitted[1].meta.continueResponse, true)
+  assert.equal(emitted[1].meta.forcedBoundary, 'approval')
   assert.equal(interceptor.pendingResponse, true)
 })
 
@@ -373,8 +422,10 @@ test('marks tool-boundary narration as a continuing response and final reply as 
   assert.equal(emitted[0].text, 'I confirmed the workspace and I’m creating a temp file now.')
   assert.equal(emitted[0].meta.continueResponse, true)
   assert.equal(emitted[0].meta.forcedBoundary, 'tool')
+  assert.equal(emitted[0].meta.kind, 'checkpoint')
   assert.equal(emitted[1].text, 'Here is the final assistant answer.')
   assert.equal(emitted[1].meta.continueResponse, false)
+  assert.equal(emitted[1].meta.kind, 'final')
 })
 
 test('does not speak echoed user input when Codex redraws it before the reply', () => {
@@ -425,6 +476,69 @@ test('does not finalize unsent draft input as assistant speech before enter is p
     'Fine. I’m here and responding normally. Your test message came through.'
   )
   assert.deepEqual(emitted, ['Fine. I’m here and responding normally. Your test message came through.'])
+})
+
+test('does not finalize wrapped unsent draft fragments as assistant speech before enter is pressed', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Use /skills to list available skills\n')
+  interceptor.activeAssistant = 'codex'
+  interceptor.pendingResponse = true
+
+  interceptor.observeInput(
+    'hey buddy i need you to check the runtime and tell me why the reply speech is double playing old segments instead of just reading the actual assistant messages'
+  )
+  interceptor.observeOutput(
+    [
+      '› hey buddy i need you to check the runtime and tell me why the',
+      '  reply speech is double playing old segments instead of just',
+      '  reading the actual assistant messages',
+      '› Use /skills to list available skills'
+    ].join('\n')
+  )
+
+  assert.equal(interceptor.flush(), null)
+  assert.deepEqual(emitted, [])
+})
+
+test('speaks standalone model state changes but keeps model menus silent', () => {
+  const { interceptor, emitted } = createMetaInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Use /skills to list available skills\n')
+  interceptor.observeInput('/model\r')
+  interceptor.observeOutput(
+    [
+      'Select Reasoning Level',
+      '1. low',
+      '2. medium',
+      '3. high',
+      '4. xhigh',
+      '',
+      'Model changed to gpt-5.4 xhigh',
+      '› Use /skills to list available skills'
+    ].join('\n')
+  )
+
+  assert.equal(interceptor.flush(), 'Model changed to gpt-5.4 xhigh')
+  assert.equal(emitted.length, 1)
+  assert.equal(emitted[0].text, 'Model changed to gpt-5.4 xhigh')
+  assert.equal(emitted[0].meta.kind, 'state_cue')
+  assert.equal(emitted[0].meta.continueResponse, false)
+})
+
+test('combines split assistant prose across redraw chunks instead of emitting orphan fragments', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Implement {feature}\n')
+  interceptor.observeInput('explain it\r')
+  interceptor.observeOutput('I need the\n')
+  interceptor.observeOutput('separate scripts rather than owning everything itself.\n› Implement {feature}\n')
+
+  assert.equal(
+    interceptor.flush(),
+    'I need the separate scripts rather than owning everything itself.'
+  )
+  assert.deepEqual(emitted, ['I need the separate scripts rather than owning everything itself.'])
 })
 
 test('ignores terminal focus escape sequences when tracking draft input', () => {

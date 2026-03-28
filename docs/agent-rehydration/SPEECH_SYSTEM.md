@@ -30,6 +30,9 @@ These runtime events are the main speech receipts:
 - `speech.analysis_finalized`
 - `speech.finalized`
 - `speech.audio`
+- `speech.queue_deduped`
+- `speech.queue_enqueued`
+- `speech.queue_cleared`
 - `speech.playback_started`
 - `speech.playback_finished`
 
@@ -45,6 +48,12 @@ Meaning:
   relay accepted the finalized text and queued TTS
 - `speech.audio`
   TTS audio was generated
+- `speech.queue_deduped`
+  a redraw tried to re-emit the same segment in the same turn and the relay dropped it
+- `speech.queue_enqueued`
+  renderer accepted an audio segment into the local playback queue
+- `speech.queue_cleared`
+  renderer intentionally dropped queued audio because playback was stopped or speech was disabled
 - `speech.playback_started`
   renderer began playing it
 - `speech.playback_finished`
@@ -59,9 +68,11 @@ Responsibilities:
 - track active assistant surface (`codex` / `claude`)
 - observe PTY input and output
 - ignore echoed draft/submitted user input
+- buffer visible prompt draft fragments so wrapped unsent prompt text is rejected
 - collect terminal output into `captureBuffer`
 - decide when the buffered prose is complete enough to speak
-- emit finalized prose exactly once
+- classify emitted segments as `checkpoint`, `final`, `approval`, `state_cue`, `screen_only`, or `user_draft`
+- emit finalized prose exactly once per turn/kind/text signature
 
 Important implementation details:
 
@@ -83,7 +94,9 @@ Responsibilities:
 - drop code-like paragraphs and lines
 - drop diff bodies
 - drop shell output
-- drop approval UI
+- drop approval UI from generic prose extraction
+- drop model / reasoning selection menus
+- surface standalone state-change lines like `Model changed to ...` separately
 - drop footer/prompt chrome
 - keep prose before code and prose after code when they are real explanation
 
@@ -131,12 +144,57 @@ If the parser waits for a later clean prompt boundary, that narration gets conta
 
 So tool/approval/output transitions are now valid speech boundaries.
 
+## Segment Kinds
+
+Internally, finalized segments are classified before they reach TTS:
+
+- `checkpoint`
+  assistant narration emitted mid-turn before tool chatter, diff output, or other hard boundaries
+- `final`
+  the terminal assistant message that ends the turn
+- `approval`
+  a dedicated spoken summary of an approval prompt, including the raw command and the user options
+- `state_cue`
+  a short standalone state change like `Model changed to gpt-5.4 xhigh`
+- `screen_only`
+  UI text that is intentionally visible but never spoken
+- `user_draft`
+  visible prompt text or wrapped prompt redraw fragments that belong to the user draft and must never be spoken
+
+Only `checkpoint`, `final`, `approval`, and `state_cue` go to TTS.
+
+## Approval Narration
+
+Approval prompts are no longer silently dropped.
+
+The generic prose extractor still ignores approval chrome, but the interceptor now parses approval prompts structurally and emits one spoken summary:
+
+- action requested
+- raw command
+- deterministic effect summary
+- options 1/2/3
+- confirm/cancel hint
+
+That keeps approvals accessible without turning the whole terminal UI into spoken sludge.
+
+## Relay And Playback Queue
+
+The relay no longer keeps only the latest segment.
+
+Current behavior:
+
+- every valid checkpoint is emitted once, in order, for the current turn
+- redraw repeats are deduped by turn plus normalized text plus segment kind
+- renderer playback stays non-interrupting
+- approval audio is inserted ahead of queued non-approval items, but it never interrupts the item already speaking
+
 ## Debugging Rule
 
 If TTS seems broken, verify where the failure actually happened:
 
 - no `speech.finalized` -> extraction/state-machine problem
 - `speech.finalized` but no `speech.audio` -> TTS generation/provider problem
-- `speech.audio` but no `speech.playback_started` -> renderer playback problem
+- `speech.audio` but no `speech.queue_enqueued` -> renderer queue intake problem
+- `speech.queue_enqueued` but no `speech.playback_started` -> renderer playback/defer/clear problem
 
 Use the Windows runtime log first before changing parser rules.

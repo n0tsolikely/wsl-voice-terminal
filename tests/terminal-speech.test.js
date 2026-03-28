@@ -2,6 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 
 const {
+  extractStateCueText,
   extractSpeechText,
   normalizeTerminalText,
   stripCodeBlocks
@@ -26,6 +27,18 @@ test('normalizeTerminalText expands cursor movement redraws into readable spacin
   assert.match(output, /Current dir:\n\/mnt\/c\/Users\/peter/)
   assert.match(output, /Git repo\nnearby/)
   assert.match(output, /\? for shortcuts/)
+})
+
+test('normalizeTerminalText strips OSC window-title sequences from terminal redraw noise', () => {
+  const input = [
+    '\u001b]0;⠸ notsolikely\u0007',
+    '• I’m good and ready to help.',
+    '\u001b]0;notsolikely\u0007'
+  ].join('\n')
+
+  const output = normalizeTerminalText(input)
+
+  assert.equal(output, '• I’m good and ready to help.')
 })
 
 test('stripCodeBlocks removes fenced code content', () => {
@@ -149,6 +162,51 @@ test('extractSpeechText ignores Codex prompt chrome like tips and context meters
   const output = extractSpeechText(input)
 
   assert.equal(output, 'I fixed the audio path and lowered the idle delay so replies speak faster.')
+})
+
+test('extractSpeechText ignores pathless model usage meters', () => {
+  const input = [
+    'I fixed the runtime so only the assistant reply gets spoken.',
+    '',
+    'GPT 5.3 Codex Spark 68% left',
+    '',
+    '> '
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I fixed the runtime so only the assistant reply gets spoken.')
+})
+
+test('extractSpeechText ignores model and reasoning selection menus', () => {
+  const input = [
+    'Select Reasoning Level',
+    '1. low',
+    '2. medium',
+    '3. high',
+    '4. xhigh',
+    'Access legacy models',
+    '',
+    'I found the parser issue and I’m tightening the speech filter now.'
+  ].join('\n')
+
+  const output = extractSpeechText(input)
+
+  assert.equal(output, 'I found the parser issue and I’m tightening the speech filter now.')
+})
+
+test('extractStateCueText returns standalone confirmed state changes without menu chrome', () => {
+  const input = [
+    'Select Model and Effort',
+    '1. gpt-5.4 xhigh',
+    '',
+    'Model changed to gpt-5.4 xhigh',
+    '› Use /skills to list available skills'
+  ].join('\n')
+
+  const output = extractStateCueText(input)
+
+  assert.equal(output, 'Model changed to gpt-5.4 xhigh')
 })
 
 test('extractSpeechText ignores Codex progress chrome and command tree lines', () => {

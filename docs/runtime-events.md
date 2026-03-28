@@ -54,12 +54,26 @@ Use these to debug push-to-talk, click mode, auto mode, and dictation noise reje
 - `speech.audio`
 - `speech.audio_skipped`
 - `speech.fallback`
+- `speech.queue_deduped`
+- `speech.queue_enqueued`
+- `speech.queue_cleared`
 - `speech.playback_started`
 - `speech.playback_finished`
 - `speech.playback_queue_drained`
 - `speech.auto_reply_toggled`
 
 These events describe what was chosen for spoken replay and whether it actually played.
+
+Important payload fields on `speech.finalized` and `speech.audio`:
+
+- `id`
+  stable replay id for one emitted segment
+- `kind`
+  one of `checkpoint`, `final`, `approval`, or `state_cue`
+- `turnId`
+  the assistant turn the segment belongs to
+- `sequence`
+  emission order inside that turn
 
 ### Speech Analysis
 
@@ -71,7 +85,8 @@ These are the key debugging events for reply extraction:
 
 - what candidate text was considered
 - which boundary condition fired
-- whether a candidate was rejected as draft echo or missing boundary
+- which internal segment kind was assigned
+- whether a candidate was rejected as draft echo, screen-only chrome, or missing boundary
 
 ### UI
 
@@ -104,6 +119,7 @@ Inspect:
 - `speech.analysis`
 - `speech.analysis_rejected`
 - `speech.finalized`
+- `speech.queue_deduped`
 
 ### User draft text was spoken back
 
@@ -129,6 +145,16 @@ Inspect:
 - `stt.request`
 - `stt.fallback`
 - `speech.fallback`
+
+### Audio was synthesized but never played
+
+Inspect:
+
+- `speech.audio`
+- `speech.queue_enqueued`
+- `speech.queue_cleared`
+- `speech.playback_started`
+- `speech.playback_finished`
 
 ## Practical Rule
 
