@@ -411,7 +411,7 @@
         pointer-events: auto;
         opacity: 1;
         transform: none;
-        max-height: 280px;
+        max-height: 440px;
       }
 
       #statusDock {
@@ -481,6 +481,99 @@
       #actionRow {
         display: grid;
         gap: 8px;
+      }
+
+      .controlSection {
+        display: grid;
+        gap: 10px;
+        padding-top: 2px;
+      }
+
+      .controlSectionTitle {
+        color: rgba(255, 255, 255, 0.52);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .controlRow {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .controlRowText {
+        min-width: 0;
+        display: grid;
+        gap: 4px;
+      }
+
+      .controlRowTitle {
+        color: rgba(255, 255, 255, 0.84);
+        font-size: 12px;
+        line-height: 1.3;
+      }
+
+      .controlRowHint {
+        color: rgba(255, 255, 255, 0.56);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .hotkeyActions {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+
+      .hotkeyButton,
+      .hotkeyClearButton {
+        min-height: 30px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.82);
+        font: inherit;
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition:
+          border-color 140ms ease,
+          background 140ms ease,
+          color 140ms ease,
+          transform 140ms ease,
+          opacity 140ms ease;
+      }
+
+      .hotkeyButton {
+        min-width: 104px;
+        padding: 0 12px;
+      }
+
+      .hotkeyClearButton {
+        width: 30px;
+        padding: 0;
+      }
+
+      .hotkeyButton:hover,
+      .hotkeyClearButton:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.28);
+      }
+
+      .hotkeyButton[data-capturing="true"] {
+        border-color: rgba(129, 237, 207, 0.42);
+        background: rgba(21, 93, 79, 0.2);
+        color: #d7fff4;
+      }
+
+      .hotkeyClearButton:disabled {
+        cursor: default;
+        opacity: 0.38;
+        transform: none;
       }
 
       .modeButton {
@@ -572,6 +665,45 @@
           transform 120ms ease,
           border-color 120ms ease,
           background 120ms ease;
+      }
+
+      #autoSendToggleButton {
+        width: 20px;
+        height: 20px;
+        position: absolute;
+        right: calc(var(--hud-right-offset) + 3px);
+        bottom: 90px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 999px;
+        background: rgba(14, 14, 14, 0.82);
+        color: transparent;
+        cursor: pointer;
+        pointer-events: auto;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.26);
+        transition:
+          transform 120ms ease,
+          border-color 120ms ease,
+          background 120ms ease,
+          box-shadow 120ms ease;
+      }
+
+      #autoSendToggleButton:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.34);
+      }
+
+      #autoSendToggleButton[data-active="true"] {
+        border-color: rgba(129, 237, 207, 0.5);
+        background: rgba(21, 93, 79, 0.96);
+        box-shadow: 0 8px 28px rgba(21, 93, 79, 0.32);
+      }
+
+      #autoSendToggleButton:focus-visible {
+        outline: 2px solid rgba(255, 255, 255, 0.8);
+        outline-offset: 3px;
       }
 
       #micButton::before {
@@ -737,6 +869,11 @@
           right: 10px;
           bottom: 16px;
         }
+
+        #autoSendToggleButton {
+          right: 13px;
+          bottom: 78px;
+        }
       }
     </style>
   </head>
@@ -835,6 +972,63 @@
               </div>
               <button id="speakerButton" type="button">Test Voice</button>
             </div>
+            <div class="controlSection" aria-label="Voice hotkeys">
+              <div class="controlSectionTitle">Hotkeys</div>
+              <div class="controlRow">
+                <div class="controlRowText">
+                  <div class="controlRowTitle">Mic toggle</div>
+                  <div class="controlRowHint">
+                    Start or stop dictation from the keyboard without touching the mic button.
+                  </div>
+                </div>
+                <div class="hotkeyActions">
+                  <button
+                    id="micToggleHotkeyButton"
+                    class="hotkeyButton"
+                    type="button"
+                    data-capturing="false"
+                  >
+                    Set hotkey
+                  </button>
+                  <button
+                    id="micToggleHotkeyClearButton"
+                    class="hotkeyClearButton"
+                    type="button"
+                    aria-label="Clear mic toggle hotkey"
+                    title="Clear mic toggle hotkey"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+              <div class="controlRow">
+                <div class="controlRowText">
+                  <div class="controlRowTitle">Push to talk</div>
+                  <div class="controlRowHint">
+                    Hold the hotkey to record, then release to stop and transcribe.
+                  </div>
+                </div>
+                <div class="hotkeyActions">
+                  <button
+                    id="pttHotkeyButton"
+                    class="hotkeyButton"
+                    type="button"
+                    data-capturing="false"
+                  >
+                    Set hotkey
+                  </button>
+                  <button
+                    id="pttHotkeyClearButton"
+                    class="hotkeyClearButton"
+                    type="button"
+                    aria-label="Clear push to talk hotkey"
+                    title="Clear push to talk hotkey"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         <div id="replyHistory" aria-live="polite" hidden></div>
@@ -842,6 +1036,14 @@
       <div id="statusDock" data-visible="false" hidden>
         <div id="status" aria-live="polite">Click mic to talk. Press Enter to stop.</div>
       </div>
+      <button
+        id="autoSendToggleButton"
+        type="button"
+        data-active="true"
+        aria-pressed="true"
+        aria-label="Turn off automatic send after transcription"
+        title="Turn off automatic send after transcription"
+      ></button>
       <button id="micButton" type="button" aria-label="PTT: hold to dictate">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path
@@ -864,7 +1066,9 @@
     <script src="./lib/dev-dictionary.js"></script>
     <script src="./lib/dictation-buffer.js"></script>
     <script src="./lib/auto-speech-filter.js"></script>
+    <script src="./lib/hotkey-utils.js"></script>
     <script src="./lib/reply-history-ui.js"></script>
+    <script src="./lib/speech-playback-queue.js"></script>
     <script src="./lib/ui-vaporize.js"></script>
     <script src="./lib/voice-controls-ui.js"></script>
     <script src="./mic-controls.js"></script>

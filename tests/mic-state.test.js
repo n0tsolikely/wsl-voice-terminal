@@ -169,7 +169,7 @@ test('state view model exposes consistent status text for busy and injected phas
   assert.equal(getMicViewModel(state).statusText, 'Transcribing...')
 
   state = transitionMicState(state, { type: 'TRANSCRIPTION_INJECTED' })
-  assert.equal(getMicViewModel(state).statusText, 'Transcript injected. Press Enter to run.')
+  assert.equal(getMicViewModel(state).statusText, 'Transcript injected. Press Enter to send.')
 })
 
 test('mode buttons stay available while transcription is running', () => {

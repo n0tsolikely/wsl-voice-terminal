@@ -4,6 +4,7 @@
   const dictationApi = window.WslVoiceTerminalDictationBuffer
   const autoSpeechFilterApi = window.WslVoiceTerminalAutoSpeechFilter || null
   const replyHistoryUiApi = window.WslVoiceTerminalReplyHistoryUi
+  const playbackQueueApi = window.WslVoiceTerminalSpeechPlaybackQueue || {}
   const vaporizeApi = window.WslVoiceTerminalVaporize || null
   const voiceControlsUiApi = window.WslVoiceTerminalVoiceControlsUi
   const terminalShellElement = document.getElementById('terminalShell')
@@ -15,8 +16,13 @@
   const drawerToggleButton = document.getElementById('drawerToggle')
   const replyHistoryToggleButton = document.getElementById('replyHistoryToggle')
   const speechToggleButton = document.getElementById('speechToggleButton')
+  const autoSendToggleButton = document.getElementById('autoSendToggleButton')
   const micButton = document.getElementById('micButton')
   const speakerButton = document.getElementById('speakerButton')
+  const micToggleHotkeyButton = document.getElementById('micToggleHotkeyButton')
+  const micToggleHotkeyClearButton = document.getElementById('micToggleHotkeyClearButton')
+  const pttHotkeyButton = document.getElementById('pttHotkeyButton')
+  const pttHotkeyClearButton = document.getElementById('pttHotkeyClearButton')
   const statusDockElement = document.getElementById('statusDock')
   const statusElement = document.getElementById('status')
   const modeDetailElement = document.getElementById('modeDetail')
@@ -72,13 +78,27 @@
     trimReplyHistory,
     upsertReplyMessage
   } = replyHistoryUiApi
+  const {
+    insertPlaybackItem = (queue, payload) => {
+      queue.push(payload)
+      return queue
+    }
+  } = playbackQueueApi
   const { formatModeLabel, renderVoiceControlsView } = voiceControlsUiApi
-  const AUTO_MIN_START_THRESHOLD = 0.012
-  const AUTO_MIN_CONTINUE_THRESHOLD = 0.008
-  const AUTO_START_MARGIN = 0.004
-  const AUTO_CONTINUE_MARGIN = 0.002
-  const AUTO_START_HOLD_MS = 120
-  const AUTO_STOP_SILENCE_MS = 900
+  const hotkeyUtilsApi = window.WslVoiceTerminalHotkeyUtils || {}
+  const {
+    eventToHotkey = () => '',
+    formatHotkeyLabel = (hotkey, fallback = 'Not set') => hotkey || fallback,
+    isBindableHotkey = () => false,
+    matchesHotkey = () => false,
+    normalizeHotkey = (hotkey) => String(hotkey || '').trim()
+  } = hotkeyUtilsApi
+  const AUTO_MIN_START_THRESHOLD = 0.014
+  const AUTO_MIN_CONTINUE_THRESHOLD = 0.009
+  const AUTO_START_MARGIN = 0.005
+  const AUTO_CONTINUE_MARGIN = 0.003
+  const AUTO_START_HOLD_MS = 180
+  const AUTO_STOP_SILENCE_MS = 5000
   const AUTO_NOISE_FLOOR_ALPHA = 0.08
   const MIN_RECORDING_MS = 320
   const PLAYBACK_COOLDOWN_MS = 450
@@ -89,7 +109,10 @@
   const REPLY_HISTORY_AUTO_HIDE_MS = 7000
   const STATUS_NOTICE_MS = 5000
   const TRANSCRIPTION_WATCHDOG_MS = 20000
+  const AUTO_SEND_STORAGE_KEY = 'wsl-voice-terminal.auto-send-enabled'
   const AUTO_REPLY_SPEECH_STORAGE_KEY = 'wsl-voice-terminal.auto-reply-speech-enabled'
+  const MIC_TOGGLE_HOTKEY_STORAGE_KEY = 'wsl-voice-terminal.mic-toggle-hotkey'
+  const PTT_HOTKEY_STORAGE_KEY = 'wsl-voice-terminal.ptt-hotkey'
   const BUSY_PHASES = new Set([
     MIC_PHASES.RECORDING,
     MIC_PHASES.STOPPING,
@@ -133,7 +156,12 @@
   let autoNoiseFloor = AUTO_MIN_CONTINUE_THRESHOLD * 0.5
   let activeReplyPlaybackId = ''
   let currentPlaybackHandle = null
+  let isAutoSendEnabled = readStoredBoolean(AUTO_SEND_STORAGE_KEY, true)
   let isAutoReplySpeechEnabled = readStoredBoolean(AUTO_REPLY_SPEECH_STORAGE_KEY, true)
+  let micToggleHotkey = normalizeHotkey(readStoredString(MIC_TOGGLE_HOTKEY_STORAGE_KEY, ''))
+  let pttHotkey = normalizeHotkey(readStoredString(PTT_HOTKEY_STORAGE_KEY, ''))
+  let activeHotkeyCapture = ''
+  let pttHotkeyHeld = false
   const playbackQueue = []
   const replyMessages = []
   let isPlayingAudio = false
@@ -157,6 +185,8 @@
     runtimeSupport
   })
   window.addEventListener('keydown', handleGlobalKeyDown, true)
+  window.addEventListener('keyup', handleGlobalKeyUp, true)
+  window.addEventListener('blur', handleWindowBlur)
   window.addEventListener('copy', handleWindowCopy, true)
   window.addEventListener('paste', handleWindowPaste, true)
   window.addEventListener('pointerdown', handleGlobalPointerDown, true)
@@ -328,6 +358,39 @@
       .finally(() => {
         focusTerminal()
       })
+  })
+
+  autoSendToggleButton?.addEventListener('click', () => {
+    const nextEnabled = !isAutoSendEnabled
+
+    applyAutoSendEnabled(nextEnabled, {
+      persist: true
+    })
+    setStatus(
+      nextEnabled ? 'Automatic send is on.' : 'Automatic send is off.',
+      'default',
+      {
+        durationMs: 2200,
+        persistDuringBusy: true
+      }
+    )
+    focusTerminal()
+  })
+
+  micToggleHotkeyButton?.addEventListener('click', () => {
+    toggleHotkeyCapture('mic-toggle')
+  })
+
+  micToggleHotkeyClearButton?.addEventListener('click', () => {
+    applyHotkeySetting('mic-toggle', '')
+  })
+
+  pttHotkeyButton?.addEventListener('click', () => {
+    toggleHotkeyCapture('ptt')
+  })
+
+  pttHotkeyClearButton?.addEventListener('click', () => {
+    applyHotkeySetting('ptt', '')
   })
 
   updatePromptConfirmButton?.addEventListener('click', () => {
@@ -574,8 +637,11 @@
                 transitionMic({
                   type: 'TRANSCRIPTION_INJECTED'
                 })
-                setStatus('Transcript injected. Press Enter to run.')
-                focusTerminal()
+                handleTranscriptReady({
+                  source: captureSource,
+                  keepAutoArmed: shouldResumeAuto,
+                  text: liveSnapshot.text
+                })
                 return
               }
 
@@ -617,8 +683,8 @@
             const acceptedAutoTranscript =
               captureSource === MIC_MODES.AUTO
                 ? evaluateAutoTranscriptCandidate(injectedText, captureVoiceMetrics, {
-                    minVoiceMs: 190,
-                    minPeakLevel: 0.026
+                    minVoiceMs: 260,
+                    minPeakLevel: 0.03
                   })
                 : { accepted: true, normalizedText: injectedText, reason: 'manual-mode' }
 
@@ -652,12 +718,11 @@
             transitionMic({
               type: 'TRANSCRIPTION_INJECTED'
             })
-
-            if (shouldResumeAuto) {
-              setStatus('Transcript injected. Auto listening stays on. Press Enter to run.')
-            }
-
-            focusTerminal()
+            handleTranscriptReady({
+              source: captureSource,
+              keepAutoArmed: shouldResumeAuto,
+              text: acceptedAutoTranscript.normalizedText
+            })
           } catch (error) {
             transitionMic({
               type: 'RESET_TO_REST'
@@ -778,9 +843,18 @@
       return
     }
 
-    playbackQueue.push({
+    insertPlaybackItem(playbackQueue, {
       ...payload,
       autoRead: Boolean(options.autoRead)
+    })
+    logRuntime('speech.queue_enqueued', {
+      id: payload.id || '',
+      kind: payload.kind || '',
+      turnId: payload.turnId || '',
+      sequence: Number(payload.sequence || 0),
+      autoRead: Boolean(options.autoRead),
+      force: Boolean(options.force),
+      queueLength: playbackQueue.length
     })
 
     maybeStartSpeechPlayback({
@@ -852,6 +926,7 @@
     }
 
     currentPlaybackHandle = {
+      payload,
       audio,
       finalize
     }
@@ -880,9 +955,16 @@
     }
   }
 
-  function stopSpeechPlayback({ clearQueue = true } = {}) {
+  function stopSpeechPlayback({ clearQueue = true, reason = 'manual-stop' } = {}) {
+    const droppedCount = clearQueue ? playbackQueue.length : 0
+
     if (clearQueue) {
       playbackQueue.length = 0
+      logRuntime('speech.queue_cleared', {
+        reason,
+        droppedCount,
+        activeId: currentPlaybackHandle?.payload?.id || activeReplyPlaybackId || ''
+      })
     }
 
     if (!currentPlaybackHandle) {
@@ -1135,7 +1217,7 @@
   }
 
   function hideLiveUiForCloseVaporize() {
-    ;[terminalShellElement, overlayElement, statusDockElement, micButton].forEach((element) => {
+    ;[terminalShellElement, overlayElement, statusDockElement, autoSendToggleButton, micButton].forEach((element) => {
       if (element instanceof Element) {
         element.style.visibility = 'hidden'
       }
@@ -1178,6 +1260,8 @@
       isAutoReplySpeechEnabled
     })
 
+    renderAutoSendToggle()
+    renderHotkeyButtons()
     renderStatus()
     renderReplyHistory()
   }
@@ -1229,7 +1313,82 @@
       return 'Always-on listening is unavailable because this runtime cannot monitor mic audio.'
     }
 
+    if (micState.mode === MIC_MODES.AUTO) {
+      return isAutoSendEnabled
+        ? 'Always listening is armed. Speak, then pause for 5 seconds and it will send automatically.'
+        : 'Always listening is armed. Speak, then pause for 5 seconds and it will transcribe into the prompt.'
+    }
+
+    if (micState.mode === MIC_MODES.HOLD) {
+      return isAutoSendEnabled
+        ? 'PTT mode: hold to talk. Release to transcribe and send automatically.'
+        : viewModel.modeDescription
+    }
+
+    if (micState.mode === MIC_MODES.TOGGLE) {
+      return isAutoSendEnabled
+        ? 'Click once to talk. Click again or press Enter to stop. Finished dictation sends automatically.'
+        : viewModel.modeDescription
+    }
+
     return viewModel.modeDescription
+  }
+
+  function renderAutoSendToggle() {
+    if (!autoSendToggleButton) {
+      return
+    }
+
+    autoSendToggleButton.dataset.active = String(isAutoSendEnabled)
+    autoSendToggleButton.setAttribute('aria-pressed', String(isAutoSendEnabled))
+    autoSendToggleButton.setAttribute(
+      'aria-label',
+      isAutoSendEnabled
+        ? 'Turn off automatic send after transcription'
+        : 'Turn on automatic send after transcription'
+    )
+    autoSendToggleButton.title = isAutoSendEnabled
+      ? 'Turn off automatic send after transcription'
+      : 'Turn on automatic send after transcription'
+  }
+
+  function renderHotkeyButtons() {
+    renderHotkeyButtonState({
+      kind: 'mic-toggle',
+      button: micToggleHotkeyButton,
+      clearButton: micToggleHotkeyClearButton,
+      hotkey: micToggleHotkey,
+      label: 'Mic toggle'
+    })
+
+    renderHotkeyButtonState({
+      kind: 'ptt',
+      button: pttHotkeyButton,
+      clearButton: pttHotkeyClearButton,
+      hotkey: pttHotkey,
+      label: 'Push to talk'
+    })
+  }
+
+  function renderHotkeyButtonState({ kind, button, clearButton, hotkey, label }) {
+    if (button) {
+      const isCapturing = activeHotkeyCapture === kind
+      button.dataset.capturing = String(isCapturing)
+      button.textContent = isCapturing ? 'Press keys...' : formatHotkeyLabel(hotkey, 'Set hotkey')
+      button.setAttribute(
+        'aria-label',
+        isCapturing
+          ? `${label} hotkey capture is active. Press a key combination or Escape to cancel.`
+          : `${label} hotkey. Current value: ${formatHotkeyLabel(hotkey, 'not set')}. Click to change it.`
+      )
+      button.title = isCapturing
+        ? 'Press a key combination or Escape to cancel'
+        : `${label} hotkey: ${formatHotkeyLabel(hotkey, 'Not set')}`
+    }
+
+    if (clearButton) {
+      clearButton.disabled = !hotkey
+    }
   }
 
   function setMicMode(nextMode) {
@@ -1293,6 +1452,16 @@
     logRuntime('mic.auto_enabled', {
       strategy
     })
+    setStatus(
+      isAutoSendEnabled
+        ? 'Auto listening is on. Speak, then pause for 5 seconds and it will send automatically.'
+        : 'Auto listening is on. Speak, then pause for 5 seconds and it will inject text into the prompt.',
+      'default',
+      {
+        durationMs: 3200,
+        persistDuringBusy: true
+      }
+    )
   }
 
   function disableAutoListening() {
@@ -1942,6 +2111,10 @@
       return
     }
 
+    if (handleHotkeyCaptureKeyDown(event)) {
+      return
+    }
+
     if (isUpdatePromptVisible() && !isEditableTarget(event.target)) {
       handleUpdatePromptKey(event)
       return
@@ -1956,6 +2129,10 @@
     }
 
     if (isEditableTarget(event.target)) {
+      return
+    }
+
+    if (handleConfiguredHotkeysKeyDown(event)) {
       return
     }
 
@@ -1976,6 +2153,24 @@
         setStatus(error.message, 'error')
       })
     }
+  }
+
+  function handleGlobalKeyUp(event) {
+    if (event.defaultPrevented || activeHotkeyCapture || !pttHotkeyHeld) {
+      return
+    }
+
+    if (!matchesHotkey(event, pttHotkey)) {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+    releasePttHotkey()
+  }
+
+  function handleWindowBlur() {
+    releasePttHotkey()
   }
 
   function handleWindowCopy(event) {
@@ -2068,6 +2263,117 @@
     return Boolean(element.closest('input, textarea, [contenteditable="true"]'))
   }
 
+  function handleHotkeyCaptureKeyDown(event) {
+    if (!activeHotkeyCapture) {
+      return false
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (event.key === 'Escape') {
+      clearHotkeyCapture()
+      setStatus('Hotkey capture cancelled.', 'default', {
+        durationMs: 1800,
+        persistDuringBusy: true
+      })
+      focusTerminal()
+      return true
+    }
+
+    if (event.key === 'Backspace' || event.key === 'Delete') {
+      applyHotkeySetting(activeHotkeyCapture, '')
+      return true
+    }
+
+    const hotkey = normalizeHotkey(eventToHotkey(event))
+
+    if (!hotkey) {
+      return true
+    }
+
+    if (!isBindableHotkey(hotkey)) {
+      setStatus('Use an F-key or a Ctrl, Alt, or Meta combination.', 'default', {
+        durationMs: 2400,
+        persistDuringBusy: true
+      })
+      return true
+    }
+
+    const existingPeerHotkey = activeHotkeyCapture === 'mic-toggle' ? pttHotkey : micToggleHotkey
+
+    if (existingPeerHotkey && hotkey === existingPeerHotkey) {
+      setStatus('That hotkey is already assigned.', 'default', {
+        durationMs: 2200,
+        persistDuringBusy: true
+      })
+      return true
+    }
+
+    applyHotkeySetting(activeHotkeyCapture, hotkey)
+    return true
+  }
+
+  function handleConfiguredHotkeysKeyDown(event) {
+    if (matchesHotkey(event, pttHotkey)) {
+      event.preventDefault()
+      event.stopPropagation()
+
+      if (event.repeat || pttHotkeyHeld) {
+        return true
+      }
+
+      pttHotkeyHeld = true
+
+      if (isRecording()) {
+        return true
+      }
+
+      if (isStartingRecording || micState.phase === MIC_PHASES.STOPPING || micState.phase === MIC_PHASES.TRANSCRIBING) {
+        return true
+      }
+
+      startRecording({
+        source: MIC_MODES.HOLD,
+        keepAutoArmed: isAutoArmed()
+      }).catch((error) => {
+        setStatus(error.message, 'error')
+      })
+      return true
+    }
+
+    if (!matchesHotkey(event, micToggleHotkey)) {
+      return false
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (event.repeat) {
+      return true
+    }
+
+    toggleMicFromHotkey().catch((error) => {
+      setStatus(error.message, 'error')
+    })
+    return true
+  }
+
+  function releasePttHotkey() {
+    if (!pttHotkeyHeld) {
+      return
+    }
+
+    pttHotkeyHeld = false
+
+    if (isRecording() && currentCapture?.source === MIC_MODES.HOLD) {
+      stopRecording({
+        reason: 'ptt-hotkey-release',
+        keepAutoArmed: isAutoArmed()
+      })
+    }
+  }
+
   function hasCopyableSelection() {
     return Boolean(getCopyableSelectionText())
   }
@@ -2087,6 +2393,11 @@
   function setControlDrawerOpen(isOpen) {
     isControlDrawerOpen = Boolean(isOpen)
 
+    if (!isControlDrawerOpen && activeHotkeyCapture) {
+      activeHotkeyCapture = ''
+      clearStatus({ preserveErrors: true })
+    }
+
     if (controlDrawer) {
       controlDrawer.dataset.open = String(isControlDrawerOpen)
     }
@@ -2094,6 +2405,65 @@
     if (drawerToggleButton) {
       drawerToggleButton.setAttribute('aria-expanded', String(isControlDrawerOpen))
     }
+  }
+
+  function toggleHotkeyCapture(kind) {
+    if (activeHotkeyCapture === kind) {
+      clearHotkeyCapture()
+      focusTerminal()
+      return
+    }
+
+    activeHotkeyCapture = kind
+    setStatus(
+      `Press a key combination for ${kind === 'ptt' ? 'push to talk' : 'mic toggle'}. Press Escape to cancel.`,
+      'default',
+      {
+        sticky: true,
+        persistDuringBusy: true
+      }
+    )
+    renderUi()
+  }
+
+  function clearHotkeyCapture() {
+    if (!activeHotkeyCapture) {
+      return
+    }
+
+    activeHotkeyCapture = ''
+    clearStatus({ preserveErrors: true })
+    renderUi()
+  }
+
+  function applyHotkeySetting(kind, hotkey) {
+    const normalizedHotkey = normalizeHotkey(hotkey)
+
+    if (kind === 'mic-toggle') {
+      micToggleHotkey = normalizedHotkey
+      writeStoredString(MIC_TOGGLE_HOTKEY_STORAGE_KEY, normalizedHotkey)
+    } else if (kind === 'ptt') {
+      pttHotkey = normalizedHotkey
+      writeStoredString(PTT_HOTKEY_STORAGE_KEY, normalizedHotkey)
+    }
+
+    activeHotkeyCapture = ''
+    renderUi()
+    setStatus(
+      normalizedHotkey
+        ? `${kind === 'ptt' ? 'Push to talk' : 'Mic toggle'} hotkey set to ${normalizedHotkey}.`
+        : `${kind === 'ptt' ? 'Push to talk' : 'Mic toggle'} hotkey cleared.`,
+      'default',
+      {
+        durationMs: 2200,
+        persistDuringBusy: true
+      }
+    )
+    logRuntime('mic.hotkey_updated', {
+      kind,
+      hotkey: normalizedHotkey
+    })
+    focusTerminal()
   }
 
   function updateMicVisualLevel(level) {
@@ -2106,8 +2476,8 @@
   function submitAutoLiveDictation() {
     const text = normalizeDictationText(getVisibleDictationText())
     const verdict = evaluateAutoTranscriptCandidate(text, autoLiveVoiceMetrics, {
-      minVoiceMs: 160,
-      minPeakLevel: 0.022
+      minVoiceMs: 220,
+      minPeakLevel: 0.026
     })
 
     if (!verdict.normalizedText || !verdict.accepted) {
@@ -2134,11 +2504,11 @@
     logRuntime('dictation.live_auto_injected', {
       text: verdict.normalizedText
     })
-    setStatus('Transcript injected. Auto listening stays on. Press Enter to run.', 'default', {
-      durationMs: 2200,
-      persistDuringBusy: true
+    handleTranscriptReady({
+      source: MIC_MODES.AUTO,
+      keepAutoArmed: true,
+      text: verdict.normalizedText
     })
-    focusTerminal()
     return true
   }
 
@@ -2252,7 +2622,7 @@
     return (
       Number.isFinite(metrics?.voiceMs) &&
       Number.isFinite(metrics?.peakLevel) &&
-      (metrics.voiceMs >= 170 || metrics.peakLevel >= 0.024)
+      (metrics.voiceMs >= 260 || metrics.peakLevel >= 0.03)
     )
   }
 
@@ -2278,6 +2648,38 @@
 
   function isBusyUiPhase() {
     return isStartingRecording || isBusyMicPhase(micState.phase) || micState.phase === MIC_PHASES.PLAYING
+  }
+
+  async function toggleMicFromHotkey() {
+    if (isUpdatePromptVisible()) {
+      return
+    }
+
+    if (isRecording()) {
+      stopRecording({
+        reason: 'hotkey-toggle',
+        keepAutoArmed: isAutoArmed()
+      })
+      return
+    }
+
+    if (isStartingRecording || micState.phase === MIC_PHASES.STOPPING || micState.phase === MIC_PHASES.TRANSCRIBING) {
+      return
+    }
+
+    if (micState.mode === MIC_MODES.AUTO) {
+      if (micState.autoEnabled) {
+        disableAutoListening()
+        return
+      }
+
+      await enableAutoListening()
+      return
+    }
+
+    await startRecording({
+      source: MIC_MODES.TOGGLE
+    })
   }
 
   function writeAppTextToPty(text) {
@@ -2519,6 +2921,46 @@
     clearBufferedDictationText()
     writeAppTextToPty(normalizedText)
     dictationBuffer = createDictationBuffer()
+  }
+
+  function handleTranscriptReady({ source, keepAutoArmed = false, text = '' } = {}) {
+    const normalizedText = normalizeDictationText(text || getVisibleDictationText())
+
+    if (!normalizedText) {
+      return false
+    }
+
+    if (!isAutoSendEnabled || isUpdatePromptVisible()) {
+      setStatus(
+        keepAutoArmed
+          ? 'Transcript injected. Auto listening stays on. Press Enter to send.'
+          : 'Transcript injected. Press Enter to send.',
+        'default',
+        {
+          durationMs: 2200,
+          persistDuringBusy: keepAutoArmed
+        }
+      )
+      focusTerminal()
+      return false
+    }
+
+    api.writeToPty('\r')
+    logRuntime('dictation.auto_send', {
+      source: source || '',
+      keepAutoArmed,
+      text: normalizedText
+    })
+    setStatus(
+      keepAutoArmed ? 'Transcript sent. Auto listening stays on.' : 'Transcript sent.',
+      'default',
+      {
+        durationMs: 2200,
+        persistDuringBusy: keepAutoArmed
+      }
+    )
+    focusTerminal()
+    return true
   }
 
   function getSignalLevel(samples) {
@@ -2814,7 +3256,8 @@
       onReplyButtonClick: (message) => {
         if (activeReplyPlaybackId === message.id) {
           stopSpeechPlayback({
-            clearQueue: true
+            clearQueue: true,
+            reason: 'reply-replay-stop'
           })
           focusTerminal()
           return
@@ -2845,7 +3288,8 @@
 
       if (currentPlaybackHandle || playbackQueue.length) {
         stopSpeechPlayback({
-          clearQueue: true
+          clearQueue: true,
+          reason: 'reply-replay-start'
         })
       }
 
@@ -2861,6 +3305,9 @@
         registerReplyAudio({
           id: message.id,
           text: message.text,
+          kind: message.kind || '',
+          turnId: message.turnId || '',
+          sequence: Number(message.sequence || 0),
           audioBase64: payload.audioBase64,
           mimeType: payload.mimeType,
           provider: payload.provider
@@ -2870,6 +3317,9 @@
       enqueueSpeech({
         id: message.id,
         text: message.text,
+        kind: message.kind || '',
+        turnId: message.turnId || '',
+        sequence: Number(message.sequence || 0),
         audioBase64: message.audioBase64,
         mimeType: message.mimeType || 'audio/mpeg',
         provider: message.provider || ''
@@ -2948,7 +3398,8 @@
 
     if (stopPlayback && !isAutoReplySpeechEnabled) {
       stopSpeechPlayback({
-        clearQueue: true
+        clearQueue: true,
+        reason: 'speech-disabled'
       })
     }
 
@@ -2961,6 +3412,19 @@
     await api.setAutoReplySpeechEnabled(isAutoReplySpeechEnabled)
     logRuntime('speech.auto_reply_toggled', {
       enabled: isAutoReplySpeechEnabled
+    })
+  }
+
+  function applyAutoSendEnabled(enabled, { persist = true } = {}) {
+    isAutoSendEnabled = Boolean(enabled)
+
+    if (persist) {
+      writeStoredBoolean(AUTO_SEND_STORAGE_KEY, isAutoSendEnabled)
+    }
+
+    renderUi()
+    logRuntime('dictation.auto_send_toggled', {
+      enabled: isAutoSendEnabled
     })
   }
 
@@ -2982,9 +3446,36 @@
     return fallbackValue
   }
 
+  function readStoredString(key, fallbackValue = '') {
+    try {
+      const rawValue = window.localStorage?.getItem(key)
+
+      if (typeof rawValue === 'string') {
+        return rawValue
+      }
+    } catch (_error) {
+      // Ignore storage failures and use the current session default.
+    }
+
+    return fallbackValue
+  }
+
   function writeStoredBoolean(key, value) {
     try {
       window.localStorage?.setItem(key, value ? 'true' : 'false')
+    } catch (_error) {
+      // Ignore storage failures and keep the current session value.
+    }
+  }
+
+  function writeStoredString(key, value) {
+    try {
+      if (!value) {
+        window.localStorage?.removeItem(key)
+        return
+      }
+
+      window.localStorage?.setItem(key, String(value))
     } catch (_error) {
       // Ignore storage failures and keep the current session value.
     }

@@ -7,6 +7,7 @@ test('recognizes common silence hallucination phrases', () => {
   assert.equal(isLikelyNoiseHallucination('thank you'), true)
   assert.equal(isLikelyNoiseHallucination('thank you very much'), true)
   assert.equal(isLikelyNoiseHallucination('thanks for watching'), true)
+  assert.equal(isLikelyNoiseHallucination('please'), true)
   assert.equal(isLikelyNoiseHallucination('bye'), true)
   assert.equal(isLikelyNoiseHallucination('bye-bye!'), true)
   assert.equal(isLikelyNoiseHallucination('actual useful sentence'), false)
@@ -49,5 +50,15 @@ test('rejects longer filler closings when there is almost no voice activity', ()
   })
 
   assert.equal(verdict.accepted, false)
-  assert.equal(verdict.reason, 'likely-hallucination')
+  assert.match(verdict.reason, /low-activity-short|likely-hallucination/)
+})
+
+test('rejects low-activity polite filler like please', () => {
+  const verdict = evaluateAutoTranscript('please', {
+    voiceMs: 80,
+    peakLevel: 0.012
+  })
+
+  assert.equal(verdict.accepted, false)
+  assert.match(verdict.reason, /low-activity-short|likely-hallucination/)
 })
