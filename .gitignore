@@ -1,4 +1,6 @@
 .env
+.codex
+.synapse/
 .local-whisper-venv/
 __pycache__/
 *.pyc
