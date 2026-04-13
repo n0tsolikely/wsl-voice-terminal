@@ -501,6 +501,60 @@ test('does not finalize wrapped unsent draft fragments as assistant speech befor
   assert.deepEqual(emitted, [])
 })
 
+test('does not finalize queued user messages that are shown while a tool is still running', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.activeAssistant = 'codex'
+  interceptor.pendingResponse = true
+  interceptor.lastPromptHint = 'Write tests for @filename'
+
+  interceptor.observeOutput(
+    [
+      '› so yeah, send that out and go check that out and then tell me what you come back with because i want to know because we need to fix this so i only get messages from you. i',
+      "don't want all the garbage in between that isn't messages like when you say, ran codex version, approved this, blah, blah, blah, blah, blah. i just want your messages, that's",
+      'it',
+      '',
+      '• I’m checking the wsl-voice-terminal repo and its runtime artifacts first, then I’ll trace where session output is being captured so I can tell you exactly why the non-message',
+      'garbage is leaking through.',
+      '• Ran rg -n "speech"'
+    ].join('\n')
+  )
+
+  assert.deepEqual(emitted, [
+    'I’m checking the wsl-voice-terminal repo and its runtime artifacts first, then I’ll trace where session output is being captured so I can tell you exactly why the non-message garbage is leaking through.'
+  ])
+})
+
+test('does not finalize broken working-status redraw fragments as assistant speech', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.activeAssistant = 'codex'
+  interceptor.pendingResponse = true
+  interceptor.lastPromptHint = 'Write tests for @filename'
+
+  interceptor.observeOutput('1 run ing · /ps to view · /stop to close\n')
+
+  assert.equal(interceptor.flush(), null)
+  assert.deepEqual(emitted, [])
+})
+
+test('does not let command-looking prompt redraws overwrite the stored prompt hint', () => {
+  const { interceptor, emitted } = createInterceptor()
+
+  interceptor.observeOutput('OpenAI Codex\n› Write tests for @filename\n')
+  assert.equal(interceptor.lastPromptHint, 'Write tests for @filename')
+
+  interceptor.observeInput('update codex\r')
+  interceptor.observeOutput('› npm install -g /home/notsolikely/openclaw/.git/refs/heads/codex\n')
+
+  assert.equal(interceptor.lastPromptHint, 'Write tests for @filename')
+
+  interceptor.observeOutput('Write tests for @filename\n› Write tests for @filename\n')
+
+  assert.equal(interceptor.flush(), null)
+  assert.deepEqual(emitted, [])
+})
+
 test('speaks standalone model state changes but keeps model menus silent', () => {
   const { interceptor, emitted } = createMetaInterceptor()
 
